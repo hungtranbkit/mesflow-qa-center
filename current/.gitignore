@@ -1,0 +1,16 @@
+.env
+.env.local
+config.json
+runtime/
+ms-playwright/
+node_modules/
+playwright-report/
+test-results/
+artifacts/
+reports/
+screenshots/
+videos/
+*.log
+.venv/
+__pycache__/
+.pytest_cache/

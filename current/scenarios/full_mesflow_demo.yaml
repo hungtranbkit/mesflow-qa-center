@@ -1,0 +1,23 @@
+name: full_mesflow_demo
+mode: demo
+steps:
+  - login
+  - view_dashboard
+  - create_or_prepare_employee
+  - create_template
+  - create_po
+  - start_po
+  - view_po_workspace
+  - kiosk_scan_employee
+  - kiosk_scan_operation
+  - start_session
+  - view_dashboard_realtime
+  - finish_session
+  - enter_quantity
+  - verify_downstream_wip
+  - view_material_flow
+  - view_supervisor
+  - view_session_management
+  - complete_remaining_operations
+  - verify_po_completed
+  - view_final_dashboard

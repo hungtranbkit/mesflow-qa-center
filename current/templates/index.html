@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MESFlow QA Center V{{ app_version }}</title>
+  <style>{{ inline_css|safe }}</style>
+</head>
+<body>
+<div id="toast" class="toast" hidden></div>
+<header class="topbar">
+  <div><div class="eyebrow">MESFLOW TEST AUTOMATION</div><h1>QA Center <span>V{{ app_version }}</span></h1><p>Kiểm thử API và vòng đời sản xuất cho MESFlow v65.8.13</p></div>
+  <div class="top-actions"><span id="clock"></span><span id="agentState" class="pill ok">Agent online</span></div>
+</header>
+<main>
+  <section class="card connection-card">
+    <div class="section-title"><div><h2>Kết nối MESFlow</h2><p>Test thông qua API thật, không thao tác trực tiếp SQLite.</p></div><span id="connectionBadge" class="pill neutral">Chưa kiểm tra</span></div>
+    <div class="form-grid">
+      <label><span>MESFlow nội bộ Docker</span><input id="internal_base_url" value="{{ config.internal_base_url or 'http://mesflow-app:8080' }}" readonly><small>Internal-only qua mesflow-edge; không gọi Cloudflare/nginx/public URL.</small></label>
+      <input id="base_url" type="hidden" value="{{ config.internal_base_url or 'http://mesflow-app:8080' }}">
+      <label><span>Tài khoản admin</span><input id="username" value="{{ config.username }}" autocomplete="username"></label>
+      <label><span>Mật khẩu</span><input id="password" type="password" value="{{ config.password }}" autocomplete="current-password"></label>
+    </div>
+    <div class="toolbar"><label class="inline-check"><input id="verify_ssl" type="checkbox" {% if config.verify_ssl %}checked{% endif %}> Xác minh SSL</label><button id="saveConfig" class="secondary">Lưu cấu hình</button><button id="checkConnection">Kiểm tra kết nối</button><span id="connectionStatus" class="muted"></span></div>
+  </section>
+
+  <section class="stats">
+    <article><span>CPU</span><strong id="cpu">-</strong></article><article><span>RAM</span><strong id="ram">-</strong></article><article><span>Đang chạy</span><strong id="running">0</strong></article><article><span>Tổng lỗi</span><strong id="errors">0</strong></article>
+  </section>
+
+  <section class="section-title simple"><div><h2>Bộ kiểm thử</h2><p>Chạy thử Functional trước, sau đó mới chạy vòng đời nhà máy.</p></div></section>
+  <section class="test-grid">
+    <article class="card test-card featured"><div class="test-icon">01</div><h3>Functional Smoke</h3><p>Kiểm tra login, health, dashboard và các API nền tảng.</p><div class="card-footer"><span>Khoảng 1–2 phút</span><button data-test="functional">Chạy Functional</button></div></article>
+    <article class="card test-card"><div class="test-icon">02</div><h3>Factory Lifecycle</h3><p>Tạo 2 PO song song, chạy QR, session, sản lượng, hoàn tất PO và kiểm tra dashboard.</p><div class="settings-row"><label>Worker<input id="factoryWorkers" type="number" value="5" min="2" max="30"></label><label>PO song song<input id="factoryActivePos" type="number" value="2" min="2" max="10"></label><label>Sản lượng<input id="factoryPlannedQty" type="number" value="3" min="1" max="100"></label></div><div class="card-footer"><span>Chạy nhanh</span><button data-test="factory_simulation">Chạy Lifecycle</button></div></article>
+    <article class="card test-card wide-card"><div class="test-icon">03</div><h3>Mô phỏng nhà máy nhiều ngày</h3><p>Đọc định mức giây/SP trực tiếp từ Operation/Template API; chạy cả ca ngày + ca tối; session tối thiểu 120 phút nhưng luôn chốt trước/cuối ca; mặc định chỉ 4% trường hợp quên nhập được để sang sáng hôm sau. Sinh OK, lỗi, lỗi sửa được và chủ động gửi một số dữ liệu sai để kiểm tra validation/action-error-log.</p><div class="settings-grid realistic-grid"><label>Nhân viên QA<input id="realtimeWorkers" type="number" value="20" min="2" max="30"></label><label>PO song song<input id="realtimeActivePos" type="number" value="2" min="2" max="10"></label><label>Số ngày chạy<input id="realtimeRunDays" type="number" value="7" min="1" max="365"></label><label>SL PO thấp nhất<input id="realtimePlanMin" type="number" value="500" min="500" max="100000"></label><label>SL PO cao nhất<input id="realtimePlanMax" type="number" value="1200" min="500" max="100000"></label><label>Mục tiêu session thấp (phút)<input id="realtimeTargetMin" type="number" value="120" min="120" max="1440"></label><label>Mục tiêu session cao (phút)<input id="realtimeTargetMax" type="number" value="1440" min="120" max="1440"></label><label>Tỷ lệ quên chốt sang hôm sau (%)<input id="realtimeForgotRate" type="number" value="4" min="0" max="20" step="0.1"></label><label>Sai lệch bình thường (%)<input id="realtimeVariance" type="number" value="30" min="0" max="30"></label><label>Tỷ lệ bất thường (%)<input id="realtimeAnomalyRate" type="number" value="2" min="0" max="20" step="0.1"></label><label>Hệ số kẹt tối thiểu<input id="realtimeAnomalyMin" type="number" value="1.8" min="1.31" max="10" step="0.1"></label><label>Hệ số kẹt tối đa<input id="realtimeAnomalyMax" type="number" value="4" min="1.31" max="20" step="0.1"></label><label>Định mức dự phòng (giây/SP)<input id="realtimeFallbackCycle" type="number" value="300" min="1" max="86400"></label><label>Kiểm report mỗi (phút)<input id="realtimeReportMinutes" type="number" value="60" min="5" max="1440"></label><label>Chu kỳ điều phối (giây)<input id="realtimeTickSeconds" type="number" value="60" min="15" max="3600"></label><label>Random seed<input id="realtimeSeed" type="number" value="65817"></label></div><label class="inline-check locked"><input id="realtimePublicUrl" type="checkbox" disabled> Internal-only: luôn gọi trực tiếp mesflow-app trong Docker</label><div class="card-footer"><span>Chạy liên tục theo lịch thật</span><button data-test="realtime_soak">Bắt đầu mô phỏng nhiều ngày</button></div></article>
+    <article class="card test-card"><div class="test-icon">04</div><h3>API Soak</h3><p>Tạo nhiều worker gọi API liên tục để kiểm tra độ ổn định backend.</p><div class="settings-row two"><label>Worker<input id="apiWorkers" type="number" value="10" min="1" max="100"></label><label>Phút<input id="apiMinutes" type="number" value="10" min="1"></label></div><div class="card-footer"><span>Stress nhẹ</span><button data-test="api_soak">Chạy API Soak</button></div></article>
+    <article class="card test-card"><div class="test-icon">05</div><h3>Browser Visual</h3><p>Mở Chromium, truy cập các trang chính và ghi nhận lỗi hiển thị.</p><div class="settings-row two"><label>Số vòng<input id="browserLoops" type="number" value="2" min="1"></label><label class="inline-check compact"><input id="headless" type="checkbox" checked> Chạy ẩn</label></div><div class="card-footer"><span>Cần Chromium</span><button data-test="browser_visual">Chạy Browser</button></div></article>
+  </section>
+
+  <section class="card danger-zone">
+    <div class="section-title">
+      <div><h2>Dọn dữ liệu kiểm thử</h2><p>Chỉ xóa PO có tiền tố <code>QAV65817-</code> (và dữ liệu QA legacy QAV65813-) cùng nhân viên <code>QAV65817-EMP-</code>. Không đụng dữ liệu sản xuất thật.</p></div>
+      <span class="pill neutral" id="cleanupBadge">Chưa kiểm tra</span>
+    </div>
+    <div class="cleanup-summary" id="cleanupSummary">Bấm “Kiểm tra dữ liệu” để xem trước số bản ghi sẽ bị xóa.</div>
+    <div class="toolbar">
+      <button class="secondary" id="previewCleanup">Kiểm tra dữ liệu</button>
+      <button class="danger" id="cleanupTestData" disabled>Xóa dữ liệu test</button>
+    </div>
+  </section>
+
+  <section class="workspace">
+    <section class="card runs-card"><div class="section-title"><div><h2>Lịch sử chạy</h2><p>Bấm vào một phiên để xem log.</p></div><button class="secondary" id="refresh">Làm mới</button></div><div id="runs" class="run-list"><div class="empty">Chưa có phiên chạy.</div></div></section>
+    <section class="card logs-card"><div class="section-title"><div><h2>Log trực tiếp</h2><p id="selectedRun">Chưa chọn phiên</p></div><div class="toolbar compact-toolbar"><label class="inline-check"><input id="autoScroll" type="checkbox"> Tự cuộn khi đang ở cuối</label><button class="secondary" id="pauseLogs">Tạm dừng</button><button class="secondary" id="copyErrors">Copy lỗi</button><button class="secondary" id="copyLogs">Copy tất cả</button></div></div><div id="logState" class="log-state">Sẵn sàng</div><pre id="logs" tabindex="0">Bấm chạy một test để xem tiến trình tại đây.</pre></section>
+  </section>
+</main>
+<script>{{ inline_js|safe }}</script>
+</body></html>

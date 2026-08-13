@@ -1,0 +1,15 @@
+# Runtime/generated data - keep outside source
+runtime/
+docker/runtime/
+artifacts/
+*.tar
+*.tar.zst
+*.log
+*.db
+*.sqlite*
+__pycache__/
+.pytest_cache/
+test-results/
+playwright-report/
+node_modules/
+.venv/

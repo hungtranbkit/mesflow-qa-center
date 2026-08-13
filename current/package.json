@@ -1,0 +1,16 @@
+{
+  "name": "mesflow-qa-center",
+  "private": true,
+  "version": "0.2.0",
+  "scripts": {
+    "demo:video": "node tools/demo-tour/run.mjs",
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "demo": "playwright test tests/full_mesflow_demo.spec.ts --headed",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0",
+    "dotenv": "^17.0.0"
+  }
+}

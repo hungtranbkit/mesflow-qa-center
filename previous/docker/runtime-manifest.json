@@ -1,0 +1,8 @@
+{
+  "runtime_version": "1.0.0",
+  "signature_files": [
+    "requirements.txt",
+    "docker/Dockerfile"
+  ],
+  "description": "Only changes to these files require rebuilding the heavy QA runtime image."
+}

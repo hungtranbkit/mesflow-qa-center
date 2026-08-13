@@ -1,0 +1,43 @@
+services:
+  mesflow-qa-center:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        QA_RUNTIME_VERSION: "1.0.0"
+    image: mesflow-qa-runtime:1.0.0
+    container_name: mesflow-qa-center
+    restart: unless-stopped
+    working_dir: /app
+    environment:
+      MESFLOW_QA_HOST: 0.0.0.0
+      MESFLOW_QA_PORT: "8095"
+      MESFLOW_QA_CONFIG_PATH: /data/config.json
+      MESFLOW_QA_LOG_DIR: /data/logs
+      MESFLOW_QA_REPORT_DIR: /data/reports
+      MESFLOW_QA_STATE_DIR: /data/state
+      MESFLOW_QA_RUNTIME_DIR: /data
+      MESFLOW_QA_INTERNAL_ONLY: "1"
+      MESFLOW_QA_INTERNAL_URL: http://mesflow-app:8080
+      MESFLOW_QA_PROFILE: ${MESFLOW_QA_PROFILE:-LOCAL}
+      MESFLOW_QA_USERNAME: ${MESFLOW_QA_USERNAME:-admin}
+      # Allow the dashboard to start before credentials are configured. The
+      # Agent rejects starting/resuming a QA run when this value is empty.
+      MESFLOW_QA_PASSWORD: ${MESFLOW_QA_PASSWORD:-}
+      MESFLOW_QA_DURATION_MINUTES: ${MESFLOW_QA_DURATION_MINUTES:-30}
+      MESFLOW_QA_API_WORKERS: ${MESFLOW_QA_API_WORKERS:-10}
+      MESFLOW_QA_AUTO_RESUME: "1"
+      MESFLOW_QA_MES_RETRY_SECONDS: "30"
+      PLAYWRIGHT_HEADLESS: "true"
+      PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+    ports:
+      - "127.0.0.1:8095:8095"
+    volumes:
+      - ..:/app:ro
+      - ../runtime:/data
+    networks:
+      - mesflow-edge
+
+networks:
+  mesflow-edge:
+    external: true

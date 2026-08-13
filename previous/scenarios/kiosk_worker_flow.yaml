@@ -1,0 +1,24 @@
+name: kiosk_worker_flow
+mode: qa
+target: web_kiosk
+purpose: Browser parity coverage for the ESP worker quantity flow.
+contract:
+  worker_fields: [good, defect, rework]
+  flow: [good, defect, optional_rework_question, optional_rework, confirm]
+  backend_payload:
+    good_qty: good
+    rework_qty: rework
+    defect_qty: defect
+cases:
+  - { name: no_defect, good: 25, defect: 0, skip_rework_question: true, rework: 0 }
+  - { name: defect_no_rework, good: 25, defect: 5, choice: none, rework: 0 }
+  - { name: defect_with_rework, good: 25, defect: 5, choice: yes, rework: 3, derived_scrap: 2 }
+  - { name: invalid_rework, good: 25, defect: 2, rework: 3, expected: rejected }
+  - { name: zero_output, good: 0, defect: 0, rework: 0 }
+  - { name: retry_same_request_id, transient_failures: 1 }
+  - { name: back_preserves_values, action: confirmation_to_quantity }
+  - { name: offline_full_quantity, good: 22, defect: 3, rework: 1, derived_scrap: 2, expected: queued }
+  - { name: offline_retry_lost_response, same_client_event_id: true, expected: duplicate_without_quantity_change }
+  - { name: offline_reboot_pending, pending_before: 20, pending_after: 20 }
+  - { name: offline_sync_100_ordered, events: 100, batch_size: 20, expected: exact_order_no_duplicates }
+  - { name: offline_business_conflict, expected: retained_for_review }

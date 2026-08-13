@@ -1,0 +1,10 @@
+name: deploy_smoke_flow
+mode: qa
+steps:
+  - readiness
+  - login
+  - dashboard
+  - production_orders
+  - po_detail
+  - session_management
+  - kiosk_page

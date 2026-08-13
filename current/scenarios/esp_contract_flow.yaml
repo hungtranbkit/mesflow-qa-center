@@ -1,0 +1,16 @@
+name: esp_contract_flow
+mode: qa
+checks:
+  - employee_qr_contract
+  - operation_qr_contract
+  - start_session_contract
+  - finish_session_contract
+  - quantity_contract
+  - heartbeat_contract
+  - event_contract
+  - business_error_contract
+  - https_server_url_contract
+  - offline_snapshot_contract
+  - offline_sync_idempotency_contract
+  - offline_event_order_contract
+  - offline_business_rejection_audit_contract
