@@ -46,7 +46,7 @@ mkdir -p "$dist"
 test_log="$dist/.test-output.tmp"
 test_status="PASS"
 if python3 -c "import pytest" >/dev/null 2>&1; then
-  ( cd "$SRC" && python3 -m pytest tests/test_v1200_*.py -q ) > "$test_log" 2>&1 || test_status="FAILED (see TEST_REPORT.txt)"
+  ( cd "$SRC" && python3 -m pytest tests/test_v120*.py -q ) > "$test_log" 2>&1 || test_status="FAILED (see TEST_REPORT.txt)"
 else
   echo "pytest not available in this build environment" > "$test_log"
   test_status="SKIPPED (pytest unavailable)"
