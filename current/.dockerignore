@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+node_modules/
+runtime/
+.git/
+.gitignore
+.venv/
+*.log
+test-results/
+playwright-report/
+docker/runtime-manifest.json

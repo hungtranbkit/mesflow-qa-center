@@ -5,8 +5,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_profiles_select_configuration_without_forking_scenarios():
-    source=(ROOT / "agent.py").read_text()
-    compose=(ROOT / "docker/compose.yml").read_text()
+    source=(ROOT / "agent.py").read_text(encoding="utf-8")
+    compose=(ROOT / "docker/compose.yml").read_text(encoding="utf-8")
     assert 'QA_PROFILE = os.environ.get("MESFLOW_QA_PROFILE", "LOCAL")' in source
     assert '{"LOCAL", "PRODUCTION_TEST"}' in source
     assert 'MESFLOW_QA_PROFILE: ${MESFLOW_QA_PROFILE:-LOCAL}' in compose

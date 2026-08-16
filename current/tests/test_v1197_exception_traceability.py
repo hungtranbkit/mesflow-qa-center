@@ -2,18 +2,18 @@ from pathlib import Path
 import ast
 import importlib.util
 import sys
+from version_contract import assert_version_contract
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_version_and_agent_are_synchronized():
-    assert (ROOT / "VERSION").read_text().strip() == "1.19.9"
-    assert 'APP_VERSION = "1.19.9"' in (ROOT / "agent.py").read_text()
+    assert_version_contract(ROOT)
 
 
 def test_state_reconcile_reports_untracked_live_qa_sessions():
-    source = (ROOT / "scenarios/realtime_factory_soak_test.py").read_text()
+    source = (ROOT / "scenarios/realtime_factory_soak_test.py").read_text(encoding="utf-8")
     ast.parse(source)
     assert "STATE-UNTRACKED-QA-OPEN" in source
     assert "unexpected_open_sessions" in source
@@ -22,7 +22,7 @@ def test_state_reconcile_reports_untracked_live_qa_sessions():
 
 
 def test_start_persists_run_and_expectation_trace_immediately():
-    source = (ROOT / "scenarios/realtime_factory_soak_test.py").read_text()
+    source = (ROOT / "scenarios/realtime_factory_soak_test.py").read_text(encoding="utf-8")
     assert "QA-RUN-" in source
     assert "EXPECTED-FORGOT" in source
     assert "NORMAL" in source
@@ -31,14 +31,14 @@ def test_start_persists_run_and_expectation_trace_immediately():
 
 
 def test_missing_production_password_fails_instead_of_retrying_forever():
-    agent = (ROOT / "agent.py").read_text()
-    soak = (ROOT / "scenarios/realtime_factory_soak_test.py").read_text()
+    agent = (ROOT / "agent.py").read_text(encoding="utf-8")
+    soak = (ROOT / "scenarios/realtime_factory_soak_test.py").read_text(encoding="utf-8")
     assert "Chưa cấu hình mật khẩu MESFlow" in agent
     assert "QA_AUTH_CONFIGURATION" in soak
 
 
 def test_qa_reports_expected_detected_unexpected_and_missing_anomalies():
-    source = (ROOT / "scenarios/realtime_factory_soak_test.py").read_text()
+    source = (ROOT / "scenarios/realtime_factory_soak_test.py").read_text(encoding="utf-8")
     for field in ('expected_anomaly_generated','expected_anomaly_detected','unexpected_anomaly','anomaly_not_detected'):
         assert field in source
     assert "inspect_session_exception_outcomes(c,state)" in source

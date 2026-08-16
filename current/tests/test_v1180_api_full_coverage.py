@@ -4,6 +4,7 @@ import pytest
 pytest.importorskip("flask")
 pytest.importorskip("requests")
 import agent
+from version_contract import source_version
 
 
 def setup_function():
@@ -13,8 +14,9 @@ def setup_function():
 
 def test_version_status_and_dashboard_render():
     c=agent.app.test_client()
-    r=c.get('/api/version'); assert r.status_code==200 and r.json['version']=='1.19.0'
-    r=c.get('/api/status'); assert r.status_code==200 and r.json['ok'] is True and r.json['version']=='1.19.0'
+    expected=source_version(Path(__file__).resolve().parents[1])
+    r=c.get('/api/version'); assert r.status_code==200 and r.json['version']==expected
+    r=c.get('/api/status'); assert r.status_code==200 and r.json['ok'] is True and r.json['version']==expected
     r=c.get('/'); assert r.status_code==200
     text=r.get_data(as_text=True); assert 'MESFlow QA Center' in text and '<style>' in text and '<script>' in text
     assert 'no-store' in r.headers.get('Cache-Control','')

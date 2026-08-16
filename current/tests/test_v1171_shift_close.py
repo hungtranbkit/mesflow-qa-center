@@ -1,6 +1,7 @@
 from pathlib import Path
 from datetime import datetime
 import importlib.util, random, sys
+from version_contract import assert_version_contract
 ROOT=Path(__file__).resolve().parents[1]
 SCRIPT=ROOT/'scenarios'/'realtime_factory_soak_test.py'
 def load_mod():
@@ -26,4 +27,4 @@ def test_ui_has_forgot_rate_and_new_version():
     h=(ROOT/'templates'/'index.html').read_text(encoding='utf-8')
     assert 'id="realtimeForgotRate"' in h
     assert 'value="4"' in h
-    assert (ROOT/'VERSION').read_text(encoding="utf-8").strip()=='1.19.0'
+    assert_version_contract(ROOT)

@@ -1,8 +1,9 @@
 from pathlib import Path
+from version_contract import assert_version_contract
 ROOT=Path(__file__).resolve().parents[1]
 
 def test_version_and_retry_contract():
-    assert (ROOT/'VERSION').read_text(encoding="utf-8").strip()=='1.19.0'
+    assert_version_contract(ROOT)
     core=(ROOT/'scenarios/lifecycle_core.py').read_text(encoding="utf-8")
     soak=(ROOT/'scenarios/realtime_factory_soak_test.py').read_text(encoding="utf-8")
     assert '521,522,523,524' in core

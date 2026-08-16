@@ -1,7 +1,8 @@
 from pathlib import Path
+from version_contract import assert_version_contract
 ROOT=Path(__file__).resolve().parents[1]
 def test_version_and_ui():
-    assert (ROOT/'VERSION').read_text(encoding="utf-8").strip()=='1.19.0'
+    assert_version_contract(ROOT)
     html=(ROOT/'templates/index.html').read_text(encoding="utf-8")
     assert 'Mô phỏng nhà máy nhiều ngày' in html and 'realtimeRunDays' in html and 'realtimeTargetMin' in html
 def test_real_time_scheduler_contract():
@@ -10,4 +11,5 @@ def test_real_time_scheduler_contract():
         assert token in s
 def test_clean_installer_version():
     s=(ROOT/'install.sh').read_text(encoding="utf-8")
-    assert 'APP_VERSION="1.18.0"' in s and 'rsync -a --delete' in s
+    assert_version_contract(ROOT)
+    assert 'rsync -a --delete' in s

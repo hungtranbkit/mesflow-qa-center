@@ -1,6 +1,7 @@
 from pathlib import Path
 import importlib.util
 import sys
+from version_contract import assert_version_contract
 
 ROOT=Path(__file__).resolve().parents[1]
 SCRIPT=ROOT/'scenarios'/'realtime_factory_soak_test.py'
@@ -36,4 +37,4 @@ def test_ui_defaults():
     assert 'id="realtimeTargetMax" type="number" value="1440"' in h
 
 def test_version():
-    assert (ROOT/'VERSION').read_text(encoding="utf-8").strip()=='1.19.0'
+    assert_version_contract(ROOT)

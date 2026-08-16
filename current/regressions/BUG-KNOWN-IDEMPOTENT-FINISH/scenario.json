@@ -1,0 +1,14 @@
+{
+  "scenario_id": "WORKER_FINISH_TIMEOUT_RETRY_0001",
+  "seed": 20260813,
+  "ordinal": 1,
+  "persona": "WORKER",
+  "system_state": "SESSION_OPEN",
+  "action": "FINISH_SESSION",
+  "data_variant": "DEFECT",
+  "timing_variant": "NORMAL",
+  "network_variant": "TIMEOUT",
+  "concurrency_variant": "SAME_EMPLOYEE_2_KIOSKS",
+  "mistakes": ["RETRY"],
+  "metadata": {"known_risk": "idempotency", "severity": "P0"}
+}

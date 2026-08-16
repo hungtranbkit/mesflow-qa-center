@@ -1,0 +1,14 @@
+{
+  "scenario_id": "WORKER_DOUBLE_FINISH_25MS_0001",
+  "seed": 20260813,
+  "ordinal": 1,
+  "persona": "WORKER",
+  "system_state": "SESSION_OPEN",
+  "action": "FINISH_SESSION",
+  "data_variant": "DEFECT",
+  "timing_variant": "NORMAL",
+  "network_variant": "SLOW",
+  "concurrency_variant": "SAME_OPERATION_2_REQUESTS",
+  "mistakes": ["DOUBLE_CLICK"],
+  "metadata": {"severity": "P0", "delay_ms": 25, "mesflow_version": "65.8.44.70"}
+}

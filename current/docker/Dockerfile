@@ -28,6 +28,13 @@ RUN pip install --no-cache-dir --upgrade pip wheel setuptools \
     && python -m playwright install --with-deps chromium \
     && rm -rf /root/.cache/pip
 
+# Build Once / Promote Same Artifact: bake the actual QA application source
+# into the image so the release built here is immutable and self-contained
+# (never needs the workspace bind-mounted at a deployment target). Local
+# dev usage via docker/compose.yml's `volumes: - ..:/app:ro` still works
+# unchanged -- that bind mount overrides everything copied here.
+COPY . /app
+
 RUN mkdir -p /data/logs /data/reports /data/state
 
 EXPOSE 8095

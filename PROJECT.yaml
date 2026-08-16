@@ -1,0 +1,71 @@
+schema_version: 1
+
+project:
+  code: qa-center
+  name: QA Center
+  type: SERVICE
+  role: TEST_ORCHESTRATOR
+
+source:
+  root: current
+
+version:
+  file: VERSION
+
+runtime:
+  type: docker-compose
+
+service:
+  healthcheck:
+    type: http
+    url: http://127.0.0.1:${QA_CENTER_LOCAL_PORT:-8095}/api/version
+    timeout_seconds: 15
+
+commands:
+
+  build:
+    command: ./scripts/build-release.sh
+    working_directory: .
+    timeout_seconds: 1800
+
+artifacts:
+  strategy: immutable
+  directory: ../artifacts/qa-center/releases
+  metadata: ../artifacts/latest/qa-center.json
+
+deployment:
+  build_once: true
+  promote_same_artifact: true
+
+  local:
+    enabled: false
+    approval_required: true
+    notes: >
+      NOT WIRED to a ProjectFlow local_deploy action in this pass, for the
+      same reason as deploy-agent/PROJECT.yaml: qa-center/compose.yml is a
+      deployment-target compose (container_name: mesflow-qa-center,
+      external network mesflow-edge) and an already-running
+      mesflow-qa-center container was observed live at 127.0.0.1:8095 during
+      the standardization scan (see
+      reports/PROJECTFLOW_STANDARDIZATION_ASSESSMENT.md §5). build is safe
+      (delegates to the existing immutable-once release builder) and is
+      wired. An isolated QA sandbox wired to mesflow-app's own
+      compose.projectflow-local.yml network (rather than the shared
+      mesflow-edge) is a known follow-up -- see
+      docs/PROJECTFLOW_INTEGRATION.md "Known limitations".
+
+  test:
+    enabled: true
+
+  staging:
+    enabled: true
+
+  production:
+    enabled: true
+    approval_required: true
+    projectflow_direct_execution: false
+
+dependencies:
+  - target: mesflow-app
+    type: TEST
+    evidence: "compose.yml MESFLOW_QA_INTERNAL_URL default http://mesflow-app:8080"

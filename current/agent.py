@@ -37,7 +37,7 @@ REPORT_DIR.mkdir(parents=True, exist_ok=True)
 STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__)
-APP_VERSION = "1.19.9"
+APP_VERSION = "1.20.0"
 QA_PROFILE = os.environ.get("MESFLOW_QA_PROFILE", "LOCAL").strip().upper()
 if QA_PROFILE not in {"LOCAL", "PRODUCTION_TEST"}:
     raise RuntimeError("MESFLOW_QA_PROFILE must be LOCAL or PRODUCTION_TEST")
@@ -112,6 +112,9 @@ class RunState:
     log_file: str = ""
     report_file: str = ""
     pid: int | None = None
+    profile: str = ""
+    release_version: str = ""
+    artifact_digest: str = ""
     stop_event: threading.Event = field(default_factory=threading.Event, repr=False)
     process: subprocess.Popen | None = field(default=None, repr=False)
     log_lines: list[str] = field(default_factory=list, repr=False)
@@ -133,6 +136,9 @@ class RunState:
             "log_file": self.log_file,
             "report_file": self.report_file,
             "pid": self.pid,
+            "profile": self.profile,
+            "release_version": self.release_version,
+            "artifact_digest": self.artifact_digest,
         }
 
 
@@ -187,7 +193,7 @@ def session_from_config(cfg: dict[str, Any]) -> requests.Session:
             )
         except Exception:
             pass
-    s.headers.update({"User-Agent": "MESFlow-QA-Center/1.19.9", "Accept": "application/json,text/html"})
+    s.headers.update({"User-Agent": f"MESFlow-QA-Center/{APP_VERSION}", "Accept": "application/json,text/html"})
     username = str(cfg.get("username") or "").strip()
     password = str(cfg.get("password") or "")
     if username:
@@ -305,6 +311,55 @@ def functional_worker(state: RunState, cfg: dict[str, Any]) -> None:
     except Exception as exc:
         state.failed += 1
         finish(state, "FAILED", f"Functional test lỗi: {exc}")
+
+
+RELEASE_PROFILES = {
+    "release-local": {
+        "environment": "LOCAL",
+        "required": True,
+        "checks": ["auth", "health", "readiness", "dashboard", "kiosk", "system-health"],
+    },
+    "release-test": {
+        "environment": "TEST",
+        "required": True,
+        "checks": ["auth", "health", "readiness", "dashboard", "kiosk", "exception-center", "production-trace", "system-health"],
+    },
+}
+
+
+def release_profile_worker(state: RunState, cfg: dict[str, Any], profile: str) -> None:
+    """Small deployed-system release gate. Source/build/migration checks remain
+    Deploy Agent facts; QA Center owns only behavior against the target app."""
+    try:
+        session=session_from_config(cfg);base=str(cfg["base_url"]).rstrip("/")
+        endpoints={
+            "auth":"/api/auth/me", "health":"/api/system/health", "readiness":"/api/system/ready",
+            "dashboard":"/api/dashboard/summary", "kiosk":"/kiosk", "exception-center":"/api/exceptions?limit=1",
+            "system-health":"/api/system-health", "production-trace":"/api/production-orders?limit=1",
+        }
+        checks=[]
+        version_response=session.get(base+"/api/system/version",timeout=20)
+        actual_version=(version_response.json().get("version") if version_response.ok else "")
+        version_ok=actual_version==state.release_version
+        checks.append({"name":"version","status":"PASS" if version_ok else "FAIL","required":True,
+                       "message":f"expected={state.release_version} actual={actual_version or 'unknown'}"})
+        for name in RELEASE_PROFILES[profile]["checks"]:
+            started=time.perf_counter()
+            try:
+                response=session.get(base+endpoints[name],timeout=20,allow_redirects=True)
+                ok=response.status_code<400 and not response.url.rstrip("/").endswith("/login")
+                checks.append({"name":name,"status":"PASS" if ok else "FAIL","required":True,
+                               "message":f"HTTP {response.status_code}","latency_ms":round((time.perf_counter()-started)*1000)})
+            except Exception as exc:
+                checks.append({"name":name,"status":"ERROR","required":True,"message":f"{type(exc).__name__}: {exc}"})
+        state.total=len(checks);state.passed=sum(x["status"]=="PASS" for x in checks);state.failed=state.total-state.passed
+        status="PASSED" if state.failed==0 else "FAILED"
+        finish(state,status,f"{profile}: {state.passed}/{state.total} required checks PASS")
+        report_path=Path(state.report_file);report=json.loads(report_path.read_text(encoding="utf-8"));report["checks"]=checks
+        report["profile"]=profile;report["release_version"]=state.release_version;report["artifact_digest"]=state.artifact_digest
+        report_path.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding="utf-8")
+    except Exception as exc:
+        finish(state,"ERROR",f"{profile} runner error: {type(exc).__name__}: {exc}")
 
 
 def api_soak_worker(state: RunState, cfg: dict[str, Any], options: dict[str, Any]) -> None:
@@ -486,6 +541,30 @@ def browser_worker(state: RunState, cfg: dict[str, Any], options: dict[str, Any]
         finish(state, "FAILED", message)
 
 
+def behavioral_worker(state: RunState, cfg: dict[str, Any], options: dict[str, Any]) -> None:
+    mode = str(options.get("mode") or "SMOKE").upper()
+    if mode not in {"SMOKE", "REGRESSION", "HUMAN_FLOW", "CHAOS", "SOAK", "FULL"}:
+        finish(state, "FAILED", f"Execution mode không hợp lệ: {mode}")
+        return
+    seed = int(options.get("seed", 20260813))
+    count = max(1, min(10000, int(options.get("count", 20))))
+    cmd = [sys.executable, "-u", str(ROOT / "qa.py"), "run", "--mode", mode, "--seed", str(seed), "--count", str(count)]
+    emit(state, f"Sinh behavioral campaign mode={mode}, seed={seed}, count={count}")
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
+        state.process = proc; state.pid = proc.pid
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            emit(state, line.rstrip())
+            if state.stop_event.is_set(): proc.terminate(); break
+        code = proc.wait(timeout=15)
+        if state.stop_event.is_set(): finish(state, "STOPPED", "Đã dừng behavioral campaign")
+        elif code == 0: state.total = count; state.passed = count; finish(state, "PASSED", f"Đã tạo {count} scenario replayable với seed {seed}")
+        else: finish(state, "FAILED", f"Behavioral runner exit {code}")
+    except Exception as exc:
+        finish(state, "FAILED", f"Behavioral runner lỗi: {exc}")
+
+
 def external_script_worker(state: RunState, cfg: dict[str, Any], test_type: str, options: dict[str, Any]) -> None:
     script = ROOT / "scenarios" / ("realistic_factory_simulation.py" if test_type == "factory_simulation" else "realtime_factory_soak_test.py")
     base = QA_INTERNAL_URL if QA_INTERNAL_ONLY else str(cfg.get("internal_base_url") or cfg["base_url"]).rstrip("/")
@@ -654,12 +733,44 @@ def api_status():
     return jsonify({"ok": True, "runs": runs, "system": system, "version": APP_VERSION, "mode": "internal-only" if QA_INTERNAL_ONLY else "custom", "target": QA_INTERNAL_URL if QA_INTERNAL_ONLY else ""})
 
 
+@app.get("/api/release-profiles")
+def api_release_profiles():
+    return jsonify({"ok":True,"profiles":RELEASE_PROFILES})
+
+
+@app.post("/api/release-runs")
+def api_release_runs():
+    payload=request.get_json(force=True) or {};profile=str(payload.get("profile") or "")
+    version=str(payload.get("release_version") or "");digest=str(payload.get("artifact_digest") or "")
+    if profile not in RELEASE_PROFILES:return jsonify({"ok":False,"error":"UNKNOWN_RELEASE_PROFILE"}),400
+    if not version or not __import__('re').fullmatch(r"sha256:[0-9a-f]{64}",digest):return jsonify({"ok":False,"error":"INVALID_RELEASE_IDENTITY"}),400
+    with _lock:
+        duplicate=next((x for x in _runs.values() if x.status=="RUNNING" and x.profile==profile and x.artifact_digest==digest),None)
+        if duplicate:return jsonify({"ok":False,"error":"RELEASE_RUN_ALREADY_ACTIVE","run":duplicate.public()}),409
+        run_id=f"{RELEASE_PROFILES[profile]['environment']}-{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
+        state=RunState(run_id=run_id,test_type="release_gate",profile=profile,release_version=version,artifact_digest=digest)
+        state.log_file=str(LOG_DIR/f"{run_id}.log");_runs[run_id]=state
+    threading.Thread(target=release_profile_worker,args=(state,load_config(),profile),daemon=True).start()
+    return jsonify({"ok":True,"run":state.public()}),202
+
+
 @app.get("/api/runs/<run_id>/logs")
 def api_logs(run_id: str):
     state = _runs.get(run_id)
     if not state:
         return jsonify({"error": "Không tìm thấy run"}), 404
     return jsonify({"lines": state.log_lines[-500:]})
+
+
+@app.get("/api/runs/<run_id>")
+def api_run(run_id: str):
+    state=_runs.get(run_id)
+    if not state:return jsonify({"ok":False,"error":"RUN_NOT_FOUND"}),404
+    result=state.public()
+    if state.report_file and Path(state.report_file).is_file():
+        try:result.update(json.loads(Path(state.report_file).read_text(encoding="utf-8")))
+        except (OSError,json.JSONDecodeError):pass
+    return jsonify({"ok":True,"run":result})
 
 
 @app.post("/api/config")
@@ -675,7 +786,7 @@ def api_config():
 def api_start():
     payload = request.get_json(force=True)
     test_type = str(payload.get("test_type") or "functional")
-    allowed = {"functional", "api_soak", "browser_visual", "factory_simulation", "realtime_soak"}
+    allowed = {"functional", "api_soak", "browser_visual", "behavioral", "factory_simulation", "realtime_soak"}
     if test_type not in allowed:
         return jsonify({"error": "Loại test không hợp lệ"}), 400
     cfg = load_config()
@@ -696,6 +807,7 @@ def api_start():
         "functional": functional_worker,
         "api_soak": api_soak_worker,
         "browser_visual": browser_worker,
+        "behavioral": behavioral_worker,
     }.get(test_type)
     if target:
         args = (state, cfg) if test_type == "functional" else (state, cfg, payload)

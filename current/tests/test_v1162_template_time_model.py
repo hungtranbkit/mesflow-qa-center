@@ -1,4 +1,5 @@
 from pathlib import Path
+from version_contract import assert_version_contract
 ROOT=Path(__file__).resolve().parents[1]
 
 def test_time_model_contract():
@@ -12,4 +13,4 @@ def test_ui_defaults_are_realistic():
     assert 'realtimeVariance' in h and 'max="30"' in h
 
 def test_version():
-    assert (ROOT/'VERSION').read_text(encoding="utf-8").strip()=='1.19.0'
+    assert_version_contract(ROOT)

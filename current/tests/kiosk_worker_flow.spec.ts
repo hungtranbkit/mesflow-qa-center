@@ -107,3 +107,33 @@ test('Zero output remains valid', async ({ page }) => {
   await page.getByTestId('kiosk-quantity-confirm').click();
   expect(payload).toMatchObject({ good_qty: 0, defect_qty: 0, rework_qty: 0 });
 });
+
+for (const viewport of [
+  { name: 'FHD', width: 1920, height: 1080 },
+  { name: 'laptop', width: 1366, height: 768 },
+  { name: 'mobile', width: 390, height: 844 },
+]) {
+  test(`Kiosk quantity flow has no horizontal overflow at ${viewport.name}`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    await openQuantity(page, () => 200);
+    await enterGoodAndDefect(page, 25, 5);
+    await page.getByTestId('kiosk-rework-choice-none').click();
+    const dimensions = await page.evaluate(() => ({ width: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }));
+    expect(dimensions.scroll).toBeLessThanOrEqual(dimensions.width);
+    await expect(page.getByTestId('kiosk-quantity-confirm')).toBeInViewport();
+  });
+}
+
+test('Double click Finish sends one in-flight request', async ({ page }) => {
+  let requestCount = 0;
+  await openQuantity(page, async () => {
+    requestCount += 1;
+    await new Promise(resolve => setTimeout(resolve, 250));
+    return 200;
+  });
+  await enterGoodAndDefect(page, 3, 1);
+  await page.getByTestId('kiosk-rework-choice-none').click();
+  await page.getByTestId('kiosk-quantity-confirm').dblclick({ delay: 25 });
+  await expect(page.locator('#screen-finished')).toHaveClass(/active/);
+  expect(requestCount).toBe(1);
+});

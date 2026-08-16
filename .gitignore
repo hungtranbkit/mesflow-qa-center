@@ -13,3 +13,4 @@ test-results/
 playwright-report/
 node_modules/
 .venv/
+.aider*
