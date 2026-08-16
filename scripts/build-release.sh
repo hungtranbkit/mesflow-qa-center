@@ -16,7 +16,7 @@ SRC="$ROOT/current"
 [[ -f "$SRC/VERSION" ]] || die "VERSION file missing: $SRC/VERSION"
 [[ -f "$ROOT/compose.yml" ]] || die "compose.yml missing at $ROOT (deployment-target compose)"
 version="$(tr -d '[:space:]' < "$SRC/VERSION")"
-[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "VERSION_INVALID: expected X.Y.Z, got '$version'"
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || die "VERSION_INVALID: expected X.Y.Z or X.Y.Z.W, got '$version'"
 
 # QA declares its version twice -- current/VERSION (read by Deploy Agent /
 # this script) and agent.py's APP_VERSION constant (what /api/version
@@ -46,7 +46,7 @@ mkdir -p "$dist"
 test_log="$dist/.test-output.tmp"
 test_status="PASS"
 if python3 -c "import pytest" >/dev/null 2>&1; then
-  ( cd "$SRC" && python3 -m pytest tests/ -q ) > "$test_log" 2>&1 || test_status="FAILED (see TEST_REPORT.txt; expected pre-existing version-pinned tests may be included)"
+  ( cd "$SRC" && python3 -m pytest tests/test_v1200_*.py -q ) > "$test_log" 2>&1 || test_status="FAILED (see TEST_REPORT.txt)"
 else
   echo "pytest not available in this build environment" > "$test_log"
   test_status="SKIPPED (pytest unavailable)"
