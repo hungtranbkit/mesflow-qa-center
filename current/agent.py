@@ -38,7 +38,7 @@ REPORT_DIR.mkdir(parents=True, exist_ok=True)
 STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__)
-APP_VERSION = "1.20.2"
+APP_VERSION = "1.20.3"
 QA_PROFILE = os.environ.get("MESFLOW_QA_PROFILE", "LOCAL").strip().upper()
 if QA_PROFILE not in {"LOCAL", "PRODUCTION_TEST"}:
     raise RuntimeError("MESFLOW_QA_PROFILE must be LOCAL or PRODUCTION_TEST")
@@ -954,7 +954,12 @@ def api_release_build_log():
 
 @app.get("/api/release/download/<version>")
 def api_release_download(version: str):
-    if not re.fullmatch(r"[0-9A-Za-z._-]{1,64}", version):
+    # Must look like an actual build-release.sh version (X.Y.Z or X.Y.Z.W)
+    # -- not merely "path-safe" characters. A looser charset that allows
+    # dots (e.g. "[0-9A-Za-z._-]+") would accept ".." as a "valid" version
+    # and let QA_RELEASES_ROOT / version escape one directory level even
+    # though Flask's route converter already blocks embedded "/".
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?", version):
         return jsonify({"ok": False, "error": "INVALID_VERSION"}), 400
     package = QA_RELEASES_ROOT / version / f"QACenter_{version}.deploy.zip"
     if not package.is_file():

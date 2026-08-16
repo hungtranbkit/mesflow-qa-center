@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 APP_NAME="mesflow-qa-center"
-APP_VERSION="1.20.2"
+APP_VERSION="1.20.3"
 INSTALL_DIR="${MESFLOW_QA_INSTALL_DIR:-/opt/mesflow-qa-center}"
 SERVICE_FILE="/etc/systemd/system/${APP_NAME}.service"
 SERVICE_DROPIN_DIR="/etc/systemd/system/${APP_NAME}.service.d"
