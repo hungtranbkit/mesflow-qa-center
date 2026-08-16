@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import signal
 import sqlite3
 import subprocess
@@ -22,7 +23,7 @@ try:
 except ImportError:
     psutil = None
 import requests
-from flask import Flask, jsonify, make_response, render_template, request
+from flask import Flask, jsonify, make_response, render_template, request, send_file
 
 ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = Path(os.environ.get("MESFLOW_QA_CONFIG_PATH", str(ROOT / "config.json")))
@@ -37,7 +38,7 @@ REPORT_DIR.mkdir(parents=True, exist_ok=True)
 STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__)
-APP_VERSION = "1.20.1"
+APP_VERSION = "1.20.2"
 QA_PROFILE = os.environ.get("MESFLOW_QA_PROFILE", "LOCAL").strip().upper()
 if QA_PROFILE not in {"LOCAL", "PRODUCTION_TEST"}:
     raise RuntimeError("MESFLOW_QA_PROFILE must be LOCAL or PRODUCTION_TEST")
@@ -311,6 +312,177 @@ def functional_worker(state: RunState, cfg: dict[str, Any]) -> None:
     except Exception as exc:
         state.failed += 1
         finish(state, "FAILED", f"Functional test lỗi: {exc}")
+
+
+# --- QA Center Release Package Builder (Build Once / Promote Same Artifact) ---
+# NOT the same thing as RELEASE_PROFILES below: release-local/release-test
+# are QA *test* gates run against an already-deployed target. This section
+# is the actual package builder -- it shells out to the SAME
+# scripts/build-release.sh Deploy Agent's own DEV-only QA build trigger
+# uses (deploy-agent/agent.py, "QA build (DEV only)" section); no second
+# build implementation, no duplicated version/contamination-guard logic.
+# QA Center never deploys anything itself -- uploading the resulting ZIP to
+# Deploy Agent (POST /qa-release/upload) and deploying it
+# (/qa-release/deploy/<version>) remains the only path to a running
+# environment. Only ever usable when this process is running from an
+# actual qa-center git checkout next to scripts/build-release.sh (local/DEV
+# usage): the deployed Docker image only ever contains current/'s contents
+# (docker/Dockerfile: `COPY . /app`, WORKDIR /app), so QA_BUILD_SCRIPT does
+# not exist there and every endpoint below reports BUILD_NOT_AVAILABLE_HERE
+# automatically -- this never runs inside a shipped QA Center container.
+QA_REPO_ROOT = ROOT.parent
+QA_BUILD_SCRIPT = QA_REPO_ROOT / "scripts" / "build-release.sh"
+QA_RELEASES_ROOT = QA_REPO_ROOT.parent / "artifacts" / "qa-center" / "releases"
+QA_BUILD_JOB_FILE = STATE_DIR / "release_build_job.json"
+_qa_build_lock = threading.Lock()
+_qa_build_job_file_lock = threading.Lock()
+
+
+def _qa_build_available() -> bool:
+    return QA_BUILD_SCRIPT.is_file() and shutil.which("docker") is not None
+
+
+def _qa_git(*args: str, timeout: int = 5) -> str:
+    try:
+        r = subprocess.run(["git", "-C", str(QA_REPO_ROOT), "-c", "safe.directory=*", *args],
+                            capture_output=True, text=True, timeout=timeout)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def _qa_working_tree_status() -> str:
+    return "DIRTY" if _qa_git("status", "--porcelain") else "CLEAN"
+
+
+def _qa_source_version() -> str:
+    f = ROOT / "VERSION"
+    return f.read_text(encoding="utf-8-sig").strip() if f.is_file() else ""
+
+
+def _qa_canon(v: str) -> str:
+    return str(v or "").strip().lstrip("Vv").strip()
+
+
+def _qa_latest_frozen_release() -> dict[str, Any] | None:
+    if not QA_RELEASES_ROOT.is_dir():
+        return None
+    best: tuple[float, dict[str, Any]] | None = None
+    for d in QA_RELEASES_ROOT.iterdir():
+        rj = d / "release.json"
+        if not rj.is_file():
+            continue
+        try:
+            meta = json.loads(rj.read_text(encoding="utf-8-sig"))
+        except Exception:
+            continue
+        mtime = rj.stat().st_mtime
+        if best is None or mtime > best[0]:
+            best = (mtime, meta)
+    return best[1] if best else None
+
+
+def _qa_package_info(version: str) -> dict[str, Any] | None:
+    dist = QA_RELEASES_ROOT / version
+    package = dist / f"QACenter_{version}.deploy.zip"
+    if not package.is_file():
+        return None
+    release_meta: dict[str, Any] = {}
+    if (dist / "release.json").is_file():
+        try:
+            release_meta = json.loads((dist / "release.json").read_text(encoding="utf-8-sig"))
+        except Exception:
+            release_meta = {}
+    manifest: dict[str, Any] = {}
+    if (dist / "manifest.json").is_file():
+        try:
+            manifest = json.loads((dist / "manifest.json").read_text(encoding="utf-8-sig"))
+        except Exception:
+            manifest = {}
+    sha_file = dist / f"QACenter_{version}.deploy.zip.sha256"
+    sha256 = sha_file.read_text(encoding="utf-8").split()[0] if sha_file.is_file() else ""
+    return {
+        "version": version,
+        "filename": package.name,
+        "size_bytes": package.stat().st_size,
+        "sha256": sha256,
+        "source_commit": release_meta.get("source_commit", ""),
+        "built_at": release_meta.get("built_at", ""),
+        "manifest": manifest,
+    }
+
+
+def _qa_build_job_read() -> dict[str, Any]:
+    with _qa_build_job_file_lock:
+        if QA_BUILD_JOB_FILE.is_file():
+            try:
+                return json.loads(QA_BUILD_JOB_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                return {}
+        return {}
+
+
+def _qa_build_job_update(status: str, message: str, **extra: Any) -> dict[str, Any]:
+    with _qa_build_job_file_lock:
+        job: dict[str, Any] = {}
+        if QA_BUILD_JOB_FILE.is_file():
+            try:
+                job = json.loads(QA_BUILD_JOB_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                job = {}
+        job.update(status=status, message=message, updated_at=now(), **extra)
+        QA_BUILD_JOB_FILE.parent.mkdir(parents=True, exist_ok=True)
+        QA_BUILD_JOB_FILE.write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
+        return job
+
+
+def _run_qa_release_build() -> None:
+    """Runs in a background thread (started by _start_qa_release_build).
+    The UI polls /api/release/build-status (lightweight JSON, no logs)
+    while status is QUEUED/BUILDING and stops once it sees a terminal
+    SUCCESS/FAILED -- full logs are fetched separately, on demand, via
+    /api/release/build-log."""
+    log_path = LOG_DIR / "release-build.log"
+    try:
+        version_at_start = _qa_source_version()
+        _qa_build_job_update("BUILDING", "Đang build QA Center release ZIP…",
+                              version=version_at_start, started_at=now(), log_file=str(log_path))
+        with log_path.open("w", encoding="utf-8") as log:
+            result = subprocess.run([str(QA_BUILD_SCRIPT)], cwd=str(QA_REPO_ROOT),
+                                     stdout=log, stderr=subprocess.STDOUT, text=True, timeout=1800)
+        full_log = log_path.read_text(encoding="utf-8", errors="replace")
+        tail_lines = full_log.splitlines()[-120:]
+        if result.returncode != 0:
+            code = "VERSION_ALREADY_RELEASED" if "VERSION_ALREADY_RELEASED" in full_log else "BUILD_FAILED"
+            _qa_build_job_update("FAILED", code, error_code=code, log_tail=tail_lines)
+            return
+        version = _qa_source_version()
+        package = _qa_package_info(version)
+        if not package:
+            _qa_build_job_update("FAILED", "PACKAGE_NOT_FOUND", error_code="PACKAGE_NOT_FOUND", log_tail=tail_lines)
+            return
+        _qa_build_job_update("SUCCESS", "Build hoàn tất", version=version, package=package, log_tail=tail_lines)
+    except subprocess.TimeoutExpired:
+        _qa_build_job_update("FAILED", "BUILD_TIMEOUT", error_code="BUILD_TIMEOUT")
+    except Exception as exc:
+        _qa_build_job_update("FAILED", f"{type(exc).__name__}: {exc}", error_code="BUILD_FAILED")
+    finally:
+        if _qa_build_lock.locked():
+            _qa_build_lock.release()
+
+
+def _start_qa_release_build() -> dict[str, Any]:
+    if not _qa_build_available():
+        raise RuntimeError("BUILD_NOT_AVAILABLE_HERE")
+    if not _qa_build_lock.acquire(False):
+        raise RuntimeError("BUILD_ALREADY_RUNNING")
+    try:
+        job = _qa_build_job_update("QUEUED", "Đã xếp hàng build")
+        threading.Thread(target=_run_qa_release_build, daemon=True).start()
+        return job
+    except Exception:
+        _qa_build_lock.release()
+        raise
 
 
 RELEASE_PROFILES = {
@@ -731,6 +903,63 @@ def api_status():
     else:
         system = {"cpu": None, "memory_percent": None, "memory_used_mb": None, "warning": "psutil chưa được cài; System Monitor tạm tắt"}
     return jsonify({"ok": True, "runs": runs, "system": system, "version": APP_VERSION, "mode": "internal-only" if QA_INTERNAL_ONLY else "custom", "target": QA_INTERNAL_URL if QA_INTERNAL_ONLY else ""})
+
+
+@app.get("/api/release/info")
+def api_release_info():
+    version = _qa_source_version()
+    latest = _qa_latest_frozen_release()
+    already_released = bool(latest) and _qa_canon(str(latest.get("version"))) == _qa_canon(version)
+    return jsonify({
+        "ok": True,
+        "build_available": _qa_build_available(),
+        "source": {
+            "version": version,
+            "git_commit": _qa_git("rev-parse", "--short", "HEAD") or "unknown",
+            "working_tree": _qa_working_tree_status(),
+        },
+        "latest_release": latest,
+        "current_version_already_released": already_released,
+        "current_version_package": _qa_package_info(version) if already_released and version else None,
+        "build_job": _qa_build_job_read(),
+    })
+
+
+@app.post("/api/release/build")
+def api_release_build():
+    try:
+        job = _start_qa_release_build()
+        return jsonify({"ok": True, "job": job}), 202
+    except RuntimeError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 409
+
+
+@app.get("/api/release/build-status")
+def api_release_build_status():
+    # Lightweight poll target: no logs, just status/message/package. UI
+    # polls this only while BUILDING and stops on SUCCESS/FAILED.
+    return jsonify({"ok": True, "job": _qa_build_job_read()})
+
+
+@app.get("/api/release/build-log")
+def api_release_build_log():
+    # On-demand only -- never auto-polled continuously.
+    job = _qa_build_job_read()
+    log_file = job.get("log_file")
+    if not log_file or not Path(log_file).is_file():
+        return jsonify({"ok": False, "error": "NO_LOG"}), 404
+    text = Path(log_file).read_text(encoding="utf-8", errors="replace")
+    return jsonify({"ok": True, "log": text[-40000:]})
+
+
+@app.get("/api/release/download/<version>")
+def api_release_download(version: str):
+    if not re.fullmatch(r"[0-9A-Za-z._-]{1,64}", version):
+        return jsonify({"ok": False, "error": "INVALID_VERSION"}), 400
+    package = QA_RELEASES_ROOT / version / f"QACenter_{version}.deploy.zip"
+    if not package.is_file():
+        return jsonify({"ok": False, "error": "PACKAGE_NOT_FOUND"}), 404
+    return send_file(str(package), as_attachment=True, download_name=package.name, mimetype="application/zip")
 
 
 @app.get("/api/release-profiles")

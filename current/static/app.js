@@ -39,6 +39,79 @@ async function refresh(force=false){if(refreshBusy&&!force)return;refreshBusy=tr
 setInterval(()=>{$('clock').textContent=new Date().toLocaleString('vi-VN');refresh()},2000);$('clock').textContent=new Date().toLocaleString('vi-VN');refresh(true);
 window.addEventListener('unhandledrejection',e=>{showToast(e.reason?.message||String(e.reason),'error')});
 
+// --- Release Package Builder --------------------------------------------
+// QA Center only BUILDS (this section); Deploy Agent only DEPLOYS. Build
+// runs as a server-side background job -- this UI polls the lightweight
+// /api/release/build-status endpoint (no logs) only while QUEUED/BUILDING,
+// and stops the moment it sees a terminal SUCCESS/FAILED. Full log text is
+// fetched once, on demand, via /api/release/build-log (never auto-polled).
+let releaseInfo=null;
+let releaseBuildTimer=null;
+function fmtBytes(n){if(!Number.isFinite(n))return '-';const units=['B','KB','MB','GB'];let i=0,v=n;while(v>=1024&&i<units.length-1){v/=1024;i++}return v.toFixed(i>0?2:0)+' '+units[i]}
+function showReleaseResult(version,pkg){
+  if(!pkg)return;
+  $('releaseResult').hidden=false;
+  $('relResVersion').textContent=version||pkg.version||'-';
+  $('relResFilename').textContent=pkg.filename||'-';
+  $('relResSize').textContent=fmtBytes(pkg.size_bytes);
+  $('relResSha256').textContent=pkg.sha256||'-';
+  $('relResCommit').textContent=pkg.source_commit||'-';
+  $('relResBuiltAt').textContent=pkg.built_at||'-';
+  $('relDownloadLink').href='/api/release/download/'+encodeURIComponent(version||pkg.version||'');
+}
+function renderReleaseJob(job){
+  const status=(job&&job.status)||'';
+  const btn=$('buildReleaseBtn');
+  const building=status==='QUEUED'||status==='BUILDING';
+  btn.disabled=building||!(releaseInfo&&releaseInfo.build_available);
+  btn.textContent=building?'BUILDING…':'Build Release ZIP';
+  $('releaseBuildStatus').textContent=building?(job.message||'Đang build…'):(status==='FAILED'?('Lỗi: '+(job.message||'')):(status==='SUCCESS'?'READY':''));
+  if(status==='SUCCESS'&&job.package)showReleaseResult(job.version,job.package);
+  return status;
+}
+function stopReleasePolling(){if(releaseBuildTimer){clearInterval(releaseBuildTimer);releaseBuildTimer=null}}
+function startReleasePolling(){
+  if(releaseBuildTimer)return;
+  releaseBuildTimer=setInterval(async()=>{
+    try{
+      const j=await requestJson('/api/release/build-status');
+      const status=renderReleaseJob(j.job);
+      if(status==='SUCCESS'||status==='FAILED'){
+        stopReleasePolling();
+        showToast(status==='SUCCESS'?'Build release hoàn tất':'Build release thất bại: '+(j.job.message||''),status==='SUCCESS'?'success':'error');
+        await loadReleaseInfo();
+      }
+    }catch(e){stopReleasePolling();showToast('Mất kết nối khi theo dõi build: '+e.message,'error')}
+  },2000);
+}
+async function loadReleaseInfo(){
+  try{
+    const j=await requestJson('/api/release/info');
+    releaseInfo=j;
+    $('releaseBuildAvailable').textContent=j.build_available?'Build khả dụng (local/DEV)':'Không khả dụng ở môi trường này';
+    $('releaseBuildAvailable').className='pill '+(j.build_available?'ok':'neutral');
+    $('relSourceVersion').textContent=j.source.version||'-';
+    $('relGitCommit').textContent=j.source.git_commit||'-';
+    $('relWorkingTree').textContent=j.source.working_tree||'-';
+    $('relLatestRelease').textContent=j.latest_release?j.latest_release.version+(j.current_version_already_released?' (= source hiện tại)':''):'(chưa có release nào)';
+    const status=renderReleaseJob(j.build_job);
+    if(status==='QUEUED'||status==='BUILDING')startReleasePolling();
+    else if(j.current_version_already_released&&j.current_version_package)showReleaseResult(j.source.version,j.current_version_package);
+  }catch(e){$('releaseBuildAvailable').textContent='Lỗi tải thông tin release';$('releaseBuildAvailable').className='pill bad';showToast(e.message,'error')}
+}
+$('buildReleaseBtn').onclick=e=>withButton(e.currentTarget,async()=>{
+  const j=await post('/api/release/build');
+  showToast('Đã bắt đầu build release','success');
+  renderReleaseJob(j.job);
+  startReleasePolling();
+}).catch(()=>{});
+$('relShowLogBtn').onclick=e=>withButton(e.currentTarget,async()=>{
+  const j=await requestJson('/api/release/build-log');
+  $('relBuildLog').textContent=j.log||'(trống)';
+  $('relBuildLog').hidden=false;
+}).catch(()=>{});
+loadReleaseInfo();
+
 let cleanupPreview=null;
 $('previewCleanup').onclick=e=>withButton(e.currentTarget,async()=>{
   await post('/api/config',configPayload());

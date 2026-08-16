@@ -86,6 +86,7 @@ docker tag "$build_tag" "$image"
 image_id="$new_id"
 digest="$image_id"
 source_commit="$(git -C "$ROOT" -c safe.directory='*' rev-parse HEAD 2>/dev/null || echo unknown)"
+built_at="$(date -Is)"
 
 tmp="$(mktemp -d)"
 cleanup_all(){ cleanup_build_tag; rm -rf "$tmp"; }
@@ -98,15 +99,98 @@ printf '%s' "$version" > "$root/VERSION"
 # files under /data, not SQL) -- never invent a schema_revision it doesn't
 # have. schema_revision stays null; requires_migration stays false.
 cat > "$root/release.json" <<JSON
-{"type":"qa-center-image-release","application":"qa-center","version":"$version","image":"$image","image_digest":"$digest","image_id":"$image_id","source_commit":"$source_commit","built_at":"$(date -Is)","release_type":"image","schema_revision":null,"requires_migration":false,"distribution":"bundle","bundle":"QACenter_${version}.tar"}
+{"type":"qa-center-image-release","application":"qa-center","version":"$version","image":"$image","image_digest":"$digest","image_id":"$image_id","source_commit":"$source_commit","built_at":"$built_at","release_type":"image","schema_revision":null,"requires_migration":false,"distribution":"bundle","bundle":"QACenter_${version}.tar"}
 JSON
 cat > "$root/PROMOTION.json" <<JSON
 {"application":"qa-center","version":"$version","image_digest":"$digest","source_commit":"$source_commit","local":{"status":"NOT_DEPLOYED"},"production_test":{"status":"NOT_DEPLOYED"},"production":{"status":"NOT_DEPLOYED"}}
 JSON
-(cd "$root" && sha256sum "QACenter_${version}.tar" compose.yml release.json VERSION PROMOTION.json > checksums.txt)
+
+# --- provenance: previous release + changed files + diff stat + commit log
+# Frozen once, here, at build time (task rule: never regenerated at deploy
+# time). "Previous release" = the most recently frozen
+# artifacts/qa-center/releases/*/release.json found on disk right now
+# (this build's own $dist does not exist yet -- the immutable-once guard
+# above already refused to proceed if it did). manifest.json/CHANGELOG.md
+# are written into the zip staging root so they ride inside the immutable
+# ZIP like compose.yml/release.json do, then also copied to $dist for local
+# browsing. Deploy Agent's validate_qa_image_release_contract() only checks
+# for its five required files (VERSION/release.json/compose.yml/
+# checksums.txt/PROMOTION.json) and does not reject extra files, so this is
+# purely additive -- no package-contract change.
+python3 - "$ROOT" "$version" "$image" "$digest" "$source_commit" "$built_at" "$root" <<'PY'
+import json, subprocess, sys, pathlib
+repo_root, version, image, digest, source_commit, built_at, staging = sys.argv[1:8]
+repo_root = pathlib.Path(repo_root); staging = pathlib.Path(staging)
+releases_root = (repo_root / ".." / "artifacts" / "qa-center" / "releases").resolve()
+
+candidates = []
+if releases_root.is_dir():
+    for d in releases_root.iterdir():
+        rj = d / "release.json"
+        if rj.is_file() and d.name != version:
+            try:
+                meta = json.loads(rj.read_text(encoding="utf-8-sig"))
+                candidates.append((rj.stat().st_mtime, meta))
+            except Exception:
+                pass
+candidates.sort(key=lambda x: x[0], reverse=True)
+previous = candidates[0][1] if candidates else None
+previous_version = previous.get("version", "") if previous else ""
+previous_commit = previous.get("source_commit", "") if previous else ""
+
+changed_files, diff_stat, change_summary = [], "N/A", "Initial release (no previous frozen QA release found)."
+if previous_commit and previous_commit != "unknown":
+    check = subprocess.run(["git", "-C", str(repo_root), "cat-file", "-e", previous_commit + "^{commit}"], capture_output=True)
+    if check.returncode == 0:
+        cf = subprocess.run(["git", "-C", str(repo_root), "diff", "--name-only", previous_commit, "HEAD"], capture_output=True, text=True)
+        changed_files = [l.strip() for l in cf.stdout.splitlines() if l.strip()]
+        ds = subprocess.run(["git", "-C", str(repo_root), "diff", "--shortstat", previous_commit, "HEAD"], capture_output=True, text=True)
+        diff_stat = ds.stdout.strip() or "No changes"
+        cl = subprocess.run(["git", "-C", str(repo_root), "log", "--oneline", previous_commit + "..HEAD"], capture_output=True, text=True)
+        change_summary = cl.stdout.strip() or "No commits between previous release and HEAD."
+    else:
+        change_summary = f"Previous release commit {previous_commit} not found in this checkout (shallow clone?); diff unavailable."
+
+manifest = {
+    "package_type": "qa-center-release-package",
+    "application": "qa-center",
+    "version": version,
+    "image": image,
+    "image_digest": digest,
+    "source_commit": source_commit,
+    "built_at": built_at,
+    # artifact_sha256 of the outer deploy.zip cannot be known yet (the zip
+    # is built from this staging dir *after* this script runs, and can't
+    # contain its own hash) -- build-release.sh fills it in on the $dist
+    # copy of this file once the zip + its .sha256 sidecar exist.
+    "artifact_sha256": None,
+    "previous_release": {"version": previous_version, "source_commit": previous_commit} if previous else None,
+    "changed_files": changed_files,
+    "changed_files_count": len(changed_files),
+    "diff_stat": diff_stat,
+    "change_summary": change_summary,
+}
+(staging / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+lines = [
+    f"# QA Center {version}", "",
+    f"- Built: {built_at}",
+    f"- Source commit: {source_commit}",
+    "- Previous release: " + (f"{previous_version} (commit {previous_commit})" if previous else "(none -- first frozen release)"),
+    "", "## Diff stat", "", "```", diff_stat, "```", "",
+    f"## Changed files ({len(changed_files)})", "",
+] + ([f"- {f}" for f in changed_files] or ["(none)"]) + [
+    "", "## Commits", "", "```", change_summary, "```", "",
+]
+(staging / "CHANGELOG.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
+
+(cd "$root" && sha256sum "QACenter_${version}.tar" compose.yml release.json VERSION PROMOTION.json manifest.json CHANGELOG.md > checksums.txt)
 cp "$root/release.json" "$dist/release.json"
 cp "$root/checksums.txt" "$dist/checksums.txt"
 cp "$root/PROMOTION.json" "$dist/PROMOTION.json"
+cp "$root/manifest.json" "$dist/manifest.json"
+cp "$root/CHANGELOG.md" "$dist/CHANGELOG.md"
 cp "$test_log" "$dist/TEST_REPORT.txt"; rm -f "$test_log"
 printf '{"image":"%s","digest":"%s","source_commit":"%s","version":"%s"}\n' "$image" "$digest" "$source_commit" "$version" > "$dist/image-info.json"
 
@@ -125,6 +209,19 @@ PY
 fi
 sha256sum "$package" > "$package.sha256"
 
+# Fill in the artifact's own SHA256 on the $dist copy of manifest.json only
+# (the copy inside the immutable ZIP deliberately stays without it -- see
+# comment above). This is the copy the QA Center Release UI reads.
+python3 -c "
+import json, pathlib
+p = pathlib.Path('$dist/manifest.json')
+m = json.loads(p.read_text(encoding='utf-8-sig'))
+m['filename'] = '$(basename "$package")'
+m['artifact_sha256'] = pathlib.Path('$package.sha256').read_text(encoding='utf-8').split()[0]
+p.write_text(json.dumps(m, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+"
+
+artifact_sha256="$(cut -d' ' -f1 "$package.sha256")"
 cat > "$dist/BUILD_REPORT.md" <<EOF
 # QA Center image build
 
@@ -132,11 +229,17 @@ cat > "$dist/BUILD_REPORT.md" <<EOF
 - Image: $image
 - Digest: $digest
 - Source commit: $source_commit
+- Built at: $built_at
+- Package: $(basename "$package")
+- Package SHA256: $artifact_sha256
 - Distribution: bundle (Docker image + compose.yml + metadata only -- no
   application source; the deploy ZIP never contains agent.py/templates/
   static/scenarios)
 - Tests: $test_status
 - Test summary (tail): $test_summary
+- Provenance: see manifest.json / CHANGELOG.md in this directory for
+  previous release, changed files, diff stat and commit log frozen at
+  build time.
 EOF
 
 echo "QA RELEASE PASS"

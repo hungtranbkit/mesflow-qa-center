@@ -4,3 +4,10 @@
 button.danger{background:#b91c1c;color:#fff}
 button.danger:hover{box-shadow:0 6px 16px #b91c1c33}
 .wide-card{grid-column:1/-1}.realistic-grid{grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}.realistic-grid label{display:flex;flex-direction:column;gap:6px}
+.release-card{margin-top:16px}.release-meta{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:4px 0 2px}.release-meta div{padding:12px 14px;border:1px solid #dfe6f1;border-radius:12px;background:#fbfdff}.release-meta span{display:block;color:#718096;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.03em}.release-meta strong{display:block;font-size:14px;margin-top:3px;word-break:break-word}
+.release-result{margin-top:16px;padding-top:16px;border-top:1px dashed #dfe6f1}.release-result-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.release-result-grid div{padding:12px 14px;border:1px solid #dfe6f1;border-radius:12px;background:#f8fbff}.release-result-grid span{display:block;color:#718096;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.03em}.release-result-grid strong{display:block;font-size:14px;margin-top:3px;word-break:break-all}
+.mono{font-family:"Cascadia Code",Consolas,monospace;font-size:12px!important}
+.btn-link{display:inline-flex;align-items:center;border:0;border-radius:9px;background:#2563eb;color:#fff!important;padding:10px 15px;font-weight:750;text-decoration:none;cursor:pointer}.btn-link:hover{box-shadow:0 6px 16px #2563eb2b}
+.release-log{margin-top:12px;height:220px;overflow:auto;background:#07111f;color:#c7f9d4;border:1px solid #162b44;padding:12px;border-radius:11px;white-space:pre-wrap;font:11px/1.5 "Cascadia Code",Consolas,monospace}
+@media(max-width:1050px){.release-meta,.release-result-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:720px){.release-meta,.release-result-grid{grid-template-columns:1fr}}

@@ -24,6 +24,29 @@
     <div class="toolbar"><label class="inline-check"><input id="verify_ssl" type="checkbox" {% if config.verify_ssl %}checked{% endif %}> Xác minh SSL</label><button id="saveConfig" class="secondary">Lưu cấu hình</button><button id="checkConnection">Kiểm tra kết nối</button><span id="connectionStatus" class="muted"></span></div>
   </section>
 
+  <section class="card release-card">
+    <div class="section-title"><div><h2>Release Package</h2><p>Đóng gói QA Center thành ZIP bất biến (Build Once) để tải lên Deploy Agent. QA Center chỉ build; Deploy Agent chịu trách nhiệm deploy.</p></div><span id="releaseBuildAvailable" class="pill neutral">Đang kiểm tra…</span></div>
+    <div class="release-meta">
+      <div><span>Source Version</span><strong id="relSourceVersion">-</strong></div>
+      <div><span>Git commit</span><strong id="relGitCommit">-</strong></div>
+      <div><span>Working tree</span><strong id="relWorkingTree">-</strong></div>
+      <div><span>Release đã đóng băng gần nhất</span><strong id="relLatestRelease">-</strong></div>
+    </div>
+    <div class="toolbar"><button id="buildReleaseBtn">Build Release ZIP</button><span id="releaseBuildStatus" class="muted"></span></div>
+    <div id="releaseResult" class="release-result" hidden>
+      <div class="release-result-grid">
+        <div><span>Version</span><strong id="relResVersion">-</strong></div>
+        <div><span>Tên file</span><strong id="relResFilename">-</strong></div>
+        <div><span>Kích thước</span><strong id="relResSize">-</strong></div>
+        <div><span>SHA256</span><strong id="relResSha256" class="mono">-</strong></div>
+        <div><span>Source commit</span><strong id="relResCommit">-</strong></div>
+        <div><span>Built at</span><strong id="relResBuiltAt">-</strong></div>
+      </div>
+      <div class="toolbar"><a id="relDownloadLink" class="btn-link" href="#">Download ZIP</a><button class="secondary" id="relShowLogBtn">Xem log build</button></div>
+      <pre id="relBuildLog" class="release-log" hidden></pre>
+    </div>
+  </section>
+
   <section class="stats">
     <article><span>CPU</span><strong id="cpu">-</strong></article><article><span>RAM</span><strong id="ram">-</strong></article><article><span>Đang chạy</span><strong id="running">0</strong></article><article><span>Tổng lỗi</span><strong id="errors">0</strong></article>
   </section>
