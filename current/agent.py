@@ -38,7 +38,7 @@ REPORT_DIR.mkdir(parents=True, exist_ok=True)
 STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__)
-APP_VERSION = "1.20.3"
+APP_VERSION = "1.20.4"
 QA_PROFILE = os.environ.get("MESFLOW_QA_PROFILE", "LOCAL").strip().upper()
 if QA_PROFILE not in {"LOCAL", "PRODUCTION_TEST"}:
     raise RuntimeError("MESFLOW_QA_PROFILE must be LOCAL or PRODUCTION_TEST")
