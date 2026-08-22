@@ -1,11 +1,6 @@
 services:
   mesflow-qa-center:
-    # This is the deployment-target compose file (Build Once / Promote Same
-    # Artifact): no `build:` block on purpose -- it only ever runs the exact
-    # immutable image already built on DEV, `--no-build`. For local
-    # source-bind-mounted development, use docker/compose.yml instead (that
-    # one is unaffected by this file).
-    image: ${MESFLOW_QA_IMAGE:-mesflow-qa-center:1.20.1}
+    image: ${MESFLOW_QA_IMAGE:-mesflow-qa-center:1.22.0}
     container_name: mesflow-qa-center
     restart: unless-stopped
     env_file:
@@ -23,8 +18,6 @@ services:
       MESFLOW_QA_INTERNAL_URL: ${MESFLOW_QA_INTERNAL_URL:-http://mesflow-app:8080}
       MESFLOW_QA_PROFILE: ${MESFLOW_QA_PROFILE:-LOCAL}
       MESFLOW_QA_USERNAME: ${MESFLOW_QA_USERNAME:-admin}
-      # Allow the dashboard to start before credentials are configured -- the
-      # app itself rejects starting/resuming a real QA run when this is empty.
       MESFLOW_QA_PASSWORD: ${MESFLOW_QA_PASSWORD:-}
       MESFLOW_QA_DURATION_MINUTES: ${MESFLOW_QA_DURATION_MINUTES:-30}
       MESFLOW_QA_API_WORKERS: ${MESFLOW_QA_API_WORKERS:-10}
@@ -32,10 +25,14 @@ services:
       MESFLOW_QA_MES_RETRY_SECONDS: "30"
       PLAYWRIGHT_HEADLESS: "true"
       PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+      MESFLOW_PREVIEW_IMAGE: ${MESFLOW_PREVIEW_IMAGE:-mesflow-app:71.0.0.46}
+      MESFLOW_PREVIEW_PORT_START: ${MESFLOW_PREVIEW_PORT_START:-18080}
+      MESFLOW_PREVIEW_POSTGRES_IMAGE: ${MESFLOW_PREVIEW_POSTGRES_IMAGE:-postgres:17-alpine}
     ports:
       - "127.0.0.1:8095:8095"
     volumes:
       - ./runtime:/data
+      - /var/run/docker.sock:/var/run/docker.sock
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8095/api/version"]
       interval: 15s
