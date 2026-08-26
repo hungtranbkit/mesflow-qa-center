@@ -15,6 +15,21 @@ class QualificationError(RuntimeError):
     pass
 
 
+# Run Manager consolidation (spec section 4): qa_qualification_runs is the
+# one shared run-history table for every kind of QA run, not just release
+# qualification -- RELEASE_QUALIFICATION remains the high-confidence
+# certification use case, but the same row shape/suite/scenario/evidence
+# infrastructure now also represents these. Not every kind has a wired
+# caller yet (LONG_RUNNING_FACTORY_SIMULATION/OFFLINE_BURST/CHAOS/
+# MIGRATION/BACKUP_RESTORE/ROLLBACK are schema-ready but not yet produced
+# by any real command -- honestly reported, not faked).
+RUN_KINDS = {
+    "FUNCTIONAL", "UI_E2E", "LONG_RUNNING_FACTORY_SIMULATION", "LOAD", "SOAK",
+    "OFFLINE_BURST", "CHAOS", "MIGRATION", "BACKUP_RESTORE", "ROLLBACK",
+    "RELEASE_QUALIFICATION",
+}
+
+
 class QualificationService:
     def __init__(self):
         self.conn = connect()
@@ -79,12 +94,15 @@ class QualificationService:
         return dict(self.conn.execute("SELECT * FROM qa_environments WHERE name=?", (name,)).fetchone())
 
     def start_run(self, *, artifact_id: str, environment_id: str, profile: str,
-                  dataset_version: str, scenario_set_version: str) -> dict[str, Any]:
+                  dataset_version: str, scenario_set_version: str,
+                  run_kind: str = "RELEASE_QUALIFICATION") -> dict[str, Any]:
         if not self.conn.execute("SELECT 1 FROM qa_artifacts WHERE id=?", (artifact_id,)).fetchone():
             raise QualificationError("unknown artifact")
         env = self.conn.execute("SELECT * FROM qa_environments WHERE id=?", (environment_id,)).fetchone()
         if not env:
             raise QualificationError("unknown environment")
+        if run_kind not in RUN_KINDS:
+            raise QualificationError(f"invalid run_kind: {run_kind!r} (must be one of {sorted(RUN_KINDS)})")
         active = self.conn.execute(
             "SELECT id FROM qa_qualification_runs WHERE artifact_id=? AND environment_id=? AND status='RUNNING'",
             (artifact_id, environment_id),
@@ -94,8 +112,8 @@ class QualificationService:
         run_id = self._id("run")
         self.conn.execute(
             """INSERT INTO qa_qualification_runs(id,artifact_id,environment_id,profile,dataset_version,
-               scenario_set_version,status,started_at) VALUES(?,?,?,?,?,?,?,?)""",
-            (run_id, artifact_id, environment_id, profile, dataset_version, scenario_set_version, "RUNNING", now()),
+               scenario_set_version,status,started_at,run_kind) VALUES(?,?,?,?,?,?,?,?,?)""",
+            (run_id, artifact_id, environment_id, profile, dataset_version, scenario_set_version, "RUNNING", now(), run_kind),
         )
         self.conn.commit()
         return dict(self.conn.execute("SELECT * FROM qa_qualification_runs WHERE id=?", (run_id,)).fetchone())

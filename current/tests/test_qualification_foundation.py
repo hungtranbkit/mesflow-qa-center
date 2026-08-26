@@ -30,6 +30,48 @@ def test_artifact_digest_is_computed_and_changed_bytes_create_new_identity(isola
     assert second["sha256"] != first["sha256"]
 
 
+def test_run_kind_defaults_to_release_qualification_and_is_persisted(isolated):
+    artifact_file = isolated / "release.zip"
+    artifact_file.write_bytes(b"run-kind-default")
+    service = QualificationService()
+    artifact = service.register_artifact(application_version="1.0.0", git_commit="abc", path=artifact_file)
+    env = service.attest_environment(name="local-run-kind", kind="LOCAL", target_url="http://127.0.0.1:8080",
+                                     database_identity="mesflow_qa")
+    run = service.start_run(artifact_id=artifact["id"], environment_id=env["id"], profile="quick",
+                            dataset_version="fixture-v1", scenario_set_version="scenario-v1")
+    assert run["run_kind"] == "RELEASE_QUALIFICATION"
+    manifest = service.run_manifest(run["id"])
+    assert manifest["run_kind"] == "RELEASE_QUALIFICATION"
+
+
+def test_run_kind_accepts_the_full_shared_run_manager_vocabulary(isolated):
+    artifact_file = isolated / "release.zip"
+    artifact_file.write_bytes(b"run-kind-vocab")
+    service = QualificationService()
+    artifact = service.register_artifact(application_version="1.0.0", git_commit="abc", path=artifact_file)
+    for kind in ("FUNCTIONAL", "UI_E2E", "LONG_RUNNING_FACTORY_SIMULATION", "LOAD", "SOAK",
+                 "OFFLINE_BURST", "CHAOS", "MIGRATION", "BACKUP_RESTORE", "ROLLBACK", "RELEASE_QUALIFICATION"):
+        env = service.attest_environment(name=f"local-{kind.lower()}", kind="LOCAL",
+                                         target_url="http://127.0.0.1:8080", database_identity="mesflow_qa",
+                                         identity=f"LOCAL:run-kind-vocab:{kind}")
+        run = service.start_run(artifact_id=artifact["id"], environment_id=env["id"], profile="quick",
+                                dataset_version="fixture-v1", scenario_set_version="scenario-v1", run_kind=kind)
+        assert run["run_kind"] == kind
+        service.finish_run(run["id"])  # release the "already running" lock before the next kind
+
+
+def test_run_kind_rejects_unknown_values(isolated):
+    artifact_file = isolated / "release.zip"
+    artifact_file.write_bytes(b"run-kind-invalid")
+    service = QualificationService()
+    artifact = service.register_artifact(application_version="1.0.0", git_commit="abc", path=artifact_file)
+    env = service.attest_environment(name="local-invalid-kind", kind="LOCAL", target_url="http://127.0.0.1:8080",
+                                     database_identity="mesflow_qa")
+    with pytest.raises(QualificationError, match="invalid run_kind"):
+        service.start_run(artifact_id=artifact["id"], environment_id=env["id"], profile="quick",
+                          dataset_version="fixture-v1", scenario_set_version="scenario-v1", run_kind="NOT_A_REAL_KIND")
+
+
 def test_destructive_environment_is_fail_closed(isolated):
     service = QualificationService()
     with pytest.raises(QualificationError, match="QA/TEST"):

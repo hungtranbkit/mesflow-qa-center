@@ -238,8 +238,13 @@ def main(argv: list[str] | None = None) -> int:
                                                   kind="QA", target_url="http://qualification.invalid",
                                                   database_identity="pending-isolated-postgresql", destructive_allowed=True,
                                                   identity=f"QA:{args.command}:{artifact['sha256']}:{uuid.uuid4().hex[:8]}")
+        # soak maps directly onto the SOAK run kind; hil has no exact
+        # vocabulary match (spec section 4's list has no HIL-specific
+        # entry) -- FUNCTIONAL is the closest honest fit for "one
+        # standalone functional-ish suite run", not a fabricated category.
         qualification = service.start_run(artifact_id=artifact["id"], environment_id=environment["id"], profile=args.command,
-                                          dataset_version=args.fixture_version, scenario_set_version=args.command)
+                                          dataset_version=args.fixture_version, scenario_set_version=args.command,
+                                          run_kind="SOAK" if args.command == "soak" else "FUNCTIONAL")
         deployer = ArtifactDeployment(args.evidence_root)
         deployment = None
         try:
@@ -279,7 +284,8 @@ def main(argv: list[str] | None = None) -> int:
                                                   identity=f"QA:artifact:{artifact['sha256']}")
         qualification = service.start_run(artifact_id=artifact["id"], environment_id=environment["id"], profile="full",
                                           dataset_version=args.fixture_version,
-                                          scenario_set_version=args.scenario_set_version)
+                                          scenario_set_version=args.scenario_set_version,
+                                          run_kind="RELEASE_QUALIFICATION")
         run_id = qualification["id"]
         deployer = ArtifactDeployment(args.evidence_root)
         deployment = None
@@ -383,7 +389,8 @@ def main(argv: list[str] | None = None) -> int:
                                                   database_identity="pending-isolated-postgresql", destructive_allowed=True,
                                                   identity=f"QA:replay:{artifact['sha256']}:{uuid.uuid4().hex[:8]}")
         qualification = service.start_run(artifact_id=artifact["id"], environment_id=environment["id"], profile="replay",
-                                          dataset_version=args.fixture_version, scenario_set_version="replay")
+                                          dataset_version=args.fixture_version, scenario_set_version="replay",
+                                          run_kind="UI_E2E" if args.suite == "ui_critical" else "FUNCTIONAL")
         deployer = ArtifactDeployment(args.evidence_root)
         deployment = None
         try:
