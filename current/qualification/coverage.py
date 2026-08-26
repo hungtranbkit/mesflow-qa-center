@@ -10,6 +10,40 @@ from .store import connect, now
 
 REGISTRY = Path(__file__).with_name("features.json")
 
+# Suite-level feature-layer credits (spec section 9: "introduce an explicit
+# supported mapping mechanism for suite-level evidence where justified. Do
+# NOT fake per-feature coverage."). Some qualification suites are
+# command-level (run_command_suite: one PASSED/FAILED for the whole suite,
+# no qa_scenario_runs children at all -- critical_unit, build_integrity)
+# -- report()'s normal scenario_key-prefix matching can NEVER credit them
+# toward any feature's required_layers, however many real scenarios pass
+# elsewhere, because there are no scenario rows to match against.
+#
+# This table is a deliberately small, hand-curated, hand-verified list --
+# NOT "any suite tagged layer=X credits every feature requiring layer=X".
+# Each entry below was checked against what that suite's own test files
+# actually exercise (see critical_unit.py's CRITICAL_UNIT_TEST_FILES,
+# which documents each file's real subject matter in an inline comment).
+# A credit only ever satisfies the LAYER requirement, never the DRIVER
+# requirement: critical_unit is plain pytest, not driven through
+# API/BROWSER/KIOSK_EMULATOR, so crediting a driver it never actually
+# exercised would be exactly the fake coverage the spec forbids. A feature
+# still needs its own real driver-level scenario evidence to ever reach
+# COVERED.
+SUITE_LAYER_CREDITS: dict[str, dict[str, Any]] = {
+    "critical_unit": {
+        "layer": "unit",
+        # scheduling.dependencies_wip also requires 'unit' but is
+        # deliberately EXCLUDED here: no file in CRITICAL_UNIT_TEST_FILES
+        # actually exercises scheduling/dependency/WIP logic (they cover
+        # session lifecycle, shift/time-boundary math, domain
+        # authorization rules, and quantity/session-service validation) --
+        # that feature's 'unit' requirement stays honestly unmet rather
+        # than fabricated.
+        "feature_keys": ["auth.sessions_roles", "sessions.lifecycle", "calendar.shifts", "quality.quantities_rework"],
+    },
+}
+
 
 def registry() -> dict[str, Any]:
     return json.loads(REGISTRY.read_text(encoding="utf-8"))
@@ -29,20 +63,38 @@ def report(run_ids: list[str] | None = None) -> dict[str, Any]:
             FROM qa_scenario_runs sr JOIN qa_suite_runs s ON s.id=sr.suite_run_id
             WHERE s.qualification_run_id IN ({placeholders})""", tuple(run_ids)
     ).fetchall() if run_ids else []
+    suite_rows = conn.execute(
+        f"""SELECT id,suite_key,status FROM qa_suite_runs WHERE qualification_run_id IN ({placeholders})""",
+        tuple(run_ids)
+    ).fetchall() if run_ids else []
+    passed_suite_ids = {row["suite_key"]: row["id"] for row in suite_rows if row["status"] == "PASSED"}
+    credited_layers: dict[str, set[str]] = {}
+    suite_level_evidence: dict[str, list[dict[str, str]]] = {}
+    for suite_key, credit in SUITE_LAYER_CREDITS.items():
+        suite_run_id = passed_suite_ids.get(suite_key)
+        if not suite_run_id:
+            continue
+        for feature_key in credit["feature_keys"]:
+            credited_layers.setdefault(feature_key, set()).add(credit["layer"])
+            suite_level_evidence.setdefault(feature_key, []).append(
+                {"suite_key": suite_key, "suite_run_id": suite_run_id, "credited_layer": credit["layer"]})
+
     details = []
     for feature in specs:
         matching = [dict(row) for row in rows if row["scenario_key"].startswith(feature["key"])]
-        passed_layers = sorted({row["layer"] for row in matching if row["status"] == "PASSED"})
+        passed_layers = sorted({row["layer"] for row in matching if row["status"] == "PASSED"}
+                              | credited_layers.get(feature["key"], set()))
         passed_drivers = sorted({row["driver"] for row in matching if row["status"] == "PASSED"})
         missing_layers = sorted(set(feature["required_layers"]) - set(passed_layers))
         missing_drivers = sorted(set(feature["required_drivers"]) - set(passed_drivers))
         covered = not missing_layers and not missing_drivers
         failures = [row for row in matching if row["status"] in {"FAILED", "BLOCKED", "FLAKY"}]
-        state = "COVERED" if covered else ("BLOCKED" if failures else ("PARTIALLY_COVERED" if matching else "UNCOVERED"))
+        state = "COVERED" if covered else ("BLOCKED" if failures else ("PARTIALLY_COVERED" if (matching or feature["key"] in suite_level_evidence) else "UNCOVERED"))
         details.append({**feature, "covered": covered, "passed_layers": passed_layers,
                         "passed_drivers": passed_drivers, "missing_layers": missing_layers,
                         "missing_drivers": missing_drivers, "status": state,
-                        "supporting_scenarios": matching, "blocking_results": failures})
+                        "supporting_scenarios": matching, "blocking_results": failures,
+                        "suite_level_evidence": suite_level_evidence.get(feature["key"], [])})
     covered = sum(1 for item in details if item["covered"])
     critical = [item for item in details if item["critical"]]
     critical_covered = sum(1 for item in critical if item["covered"])
