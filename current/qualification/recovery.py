@@ -21,6 +21,7 @@ import requests
 from .database import DeterministicDatabase
 from .deployment import DeploymentError, _run
 from .evidence import EvidenceStore
+from .integrity_runner import IntegrityRunner
 from .scenario_runner import ScenarioRunner
 from .store import connect, now
 
@@ -42,6 +43,7 @@ class RecoveryRunner:
         self.evidence_root = evidence_root
         self._runner = ScenarioRunner(evidence_root, scenario_version="recovery-v1",
                                       driver="RECOVERY", evidence_kind="RECOVERY_EVIDENCE")
+        self._integrity = IntegrityRunner(evidence_root)
 
     def _scenario(self, suite_id: str, run_id: str, key: str, fn) -> dict[str, Any]:
         return self._runner.run(suite_id, run_id, key, fn)
@@ -62,17 +64,19 @@ class RecoveryRunner:
         raise DeploymentError(f"{app} did not recover within {timeout_seconds}s: {last_error}")
 
     def _invariants_ok(self, run_id: str, db_container: str) -> dict[str, Any]:
-        checks = {
-            "ONE_ACTIVE_SESSION_PER_EMPLOYEE": "SELECT employee_id,count(*) n FROM work_sessions WHERE status='OPEN' GROUP BY employee_id HAVING count(*)>1",
-            "NON_NEGATIVE_QUANTITIES": "SELECT id FROM work_sessions WHERE good_qty<0 OR defect_qty<0 OR rework_qty<0",
-            "REFERENTIAL_INTEGRITY": "SELECT ws.id FROM work_sessions ws LEFT JOIN employees e ON e.id=ws.employee_id LEFT JOIN operations o ON o.id=ws.operation_id WHERE e.id IS NULL OR o.id IS NULL",
-        }
-        database = DeterministicDatabase(self.evidence_root)
-        violations = {key: database.query_json(db_container, sql) for key, sql in checks.items()}
-        broken = {key: rows for key, rows in violations.items() if rows}
-        if broken:
-            raise AssertionError(f"invariant violations after interruption: {broken}")
-        return {"checks": list(checks), "violations": 0}
+        # Delegates to the shared IntegrityRunner (spec: "Integrity Runner
+        # consolidation" -- do not implement separate invariant logic per
+        # scenario type). Previously this method hand-rolled its OWN,
+        # SMALLER 3-check subset of live.py's 5-check invariant set (missing
+        # SESSION_TEMPORAL_ORDER and NO_DUPLICATE_QUANTITY_MOVEMENT
+        # entirely) and never persisted anything to qa_invariant_results --
+        # a recovery scenario's invariant check was invisible outside of
+        # whatever exception it raised. Both gaps are real bugs this fixes:
+        # recovery now gets the exact same invariant coverage the normal
+        # workflow suite proves, and every check (pass or fail) is
+        # queryable evidence afterwards, same as any other suite.
+        results = self._integrity.assert_ok(run_id, db_container, context="post-interruption")
+        return {"checks": list(results), "violations": 0}
 
     def run(self, run_id: str, deployment: dict[str, Any]) -> dict[str, Any]:
         namespace = deployment["namespace"]

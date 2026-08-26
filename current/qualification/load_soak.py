@@ -26,8 +26,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .database import DeterministicDatabase
 from .evidence import EvidenceStore
+from .integrity_runner import IntegrityRunner
 from .store import connect, now
 
 try:
@@ -41,6 +41,7 @@ class LoadSoakRunner:
         self.conn = connect()
         self.evidence = EvidenceStore(evidence_root)
         self.evidence_root = evidence_root
+        self._integrity = IntegrityRunner(evidence_root)
 
     def run(self, run_id: str, deployment: dict[str, Any], *, profile: str = "SMALL_FACTORY",
             speed_label: str = "10X", window_seconds: float = 60.0, seed: int | None = None,
@@ -81,17 +82,17 @@ class LoadSoakRunner:
             final_snapshot = last_snapshot  # already stopped itself (e.g. hit a safety cap)
 
         metrics = final_snapshot.get("metrics", {})
-        database = DeterministicDatabase(self.evidence_root)
+        # Shared IntegrityRunner (spec: "Integrity Runner consolidation")
+        # instead of this suite's own inline 2-check dict (which was a
+        # strict subset of live.py's 5-check set and, like recovery.py's
+        # old copy, never persisted anything to qa_invariant_results).
+        # Soak now gets the full check set and every result is queryable
+        # evidence afterwards, not just whatever made it into this payload.
         try:
-            violations = {
-                "NEGATIVE_QUANTITIES": database.query_json(deployment["db_container"],
-                    "SELECT id FROM work_sessions WHERE good_qty<0 OR defect_qty<0 OR rework_qty<0"),
-                "ONE_ACTIVE_SESSION_PER_EMPLOYEE": database.query_json(deployment["db_container"],
-                    "SELECT employee_id,count(*) n FROM work_sessions WHERE status='OPEN' GROUP BY employee_id HAVING count(*)>1"),
-            }
+            results = self._integrity.check(run_id, deployment["db_container"], evidence_name="load-soak-invariants")
+            broken = {key: value["violations"] for key, value in results.items() if value["status"] == "FAILED"}
         except Exception as exc:
-            violations = {"CHECK_FAILED": [{"error": str(exc)}]}
-        broken = {k: v for k, v in violations.items() if v}
+            broken = {"CHECK_FAILED": [{"error": str(exc)}]}
 
         payload = {"seed": seed, "engine_run_id": sim_run_id, "profile": profile, "speed_label": speed_label,
                   "window_seconds": window_seconds, "final_snapshot": final_snapshot, "metrics": metrics,

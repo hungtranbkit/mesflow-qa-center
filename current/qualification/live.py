@@ -10,6 +10,7 @@ import requests
 
 from .database import DeterministicDatabase
 from .evidence import EvidenceStore
+from .integrity_runner import IntegrityRunner
 from .store import connect, now
 
 
@@ -29,6 +30,7 @@ class LiveMESFlowQualification:
         self.conn = connect()
         self.evidence = EvidenceStore(evidence_root)
         self.database = DeterministicDatabase(evidence_root)
+        self._integrity = IntegrityRunner(evidence_root)
         self.http = requests.Session()
         self.intentional_wrong_quantity = intentional_wrong_quantity
         self.calls: list[dict[str, Any]] = []
@@ -260,24 +262,14 @@ class LiveMESFlowQualification:
         return values
 
     def invariants(self) -> dict[str, Any]:
-        checks = {
-            "ONE_ACTIVE_SESSION_PER_EMPLOYEE": "SELECT employee_id,count(*) n FROM work_sessions WHERE status='OPEN' GROUP BY employee_id HAVING count(*)>1",
-            "NON_NEGATIVE_QUANTITIES": "SELECT id,good_qty,defect_qty,rework_qty FROM work_sessions WHERE good_qty<0 OR defect_qty<0 OR rework_qty<0 OR rework_qty>defect_qty",
-            "SESSION_TEMPORAL_ORDER": "SELECT id,started_at,ended_at FROM work_sessions WHERE ended_at IS NOT NULL AND ended_at<started_at",
-            "NO_DUPLICATE_QUANTITY_MOVEMENT": "SELECT correlation_id,session_id,movement_type,delta,count(*) n FROM quantity_movements WHERE correlation_id<>'' GROUP BY correlation_id,session_id,movement_type,delta HAVING count(*)>1",
-            "REFERENTIAL_INTEGRITY": "SELECT ws.id FROM work_sessions ws LEFT JOIN employees e ON e.id=ws.employee_id LEFT JOIN operations o ON o.id=ws.operation_id WHERE e.id IS NULL OR o.id IS NULL",
-        }
-        results = {}
-        for key, sql in checks.items():
-            violations = self.database.query_json(self.db_container, sql)
-            status = "PASSED" if not violations else "FAILED"
-            self.conn.execute("""INSERT INTO qa_invariant_results(qualification_run_id,scenario_run_id,invariant_key,status,
-              expected_json,actual_json,created_at) VALUES(?,NULL,?,?,?,?,?)""",
-              (self.run_id, key, status, json.dumps([]), json.dumps(violations), now()))
-            results[key] = {"status": status, "violations": violations}
-        self.conn.commit()
-        self.evidence.write_json(self.run_id, "domain-invariants.json", results, kind="INVARIANT_EVIDENCE")
-        return results
+        # Delegates to the shared IntegrityRunner (spec: "Integrity Runner
+        # consolidation") -- this was the fullest/authoritative one of what
+        # were three independently hand-rolled copies of this same check
+        # set (recovery.py and load_soak.py had their own, smaller,
+        # never-persisted versions; both now delegate here too). Kept as a
+        # thin wrapper, not removed, so every existing caller of
+        # LiveMESFlowQualification.invariants() keeps working unchanged.
+        return self._integrity.check(self.run_id, self.db_container, evidence_name="domain-invariants")
 
     def _finish_suite(self, suite_id: str) -> None:
         statuses = [r["status"] for r in self.conn.execute("SELECT status FROM qa_scenario_runs WHERE suite_run_id=?", (suite_id,))]

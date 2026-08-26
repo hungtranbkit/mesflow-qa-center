@@ -127,8 +127,12 @@ def test_load_soak_fails_on_real_errors_reported_by_the_engine(service, tmp_path
     fake_mgr.status.return_value = {"run_id": "sim-1", "status": "STOPPED",
                                     "metrics": {"errors": 3, "business_events": 50}}
     fake_mgr.stop.side_effect = RuntimeError("already stopped")
+    # DeterministicDatabase is now instantiated inside the shared
+    # IntegrityRunner (qualification.integrity_runner), not load_soak.py
+    # itself -- see the Integrity Runner consolidation (load_soak/recovery/
+    # live.py all delegate to one shared invariant-check implementation).
     with patch("qualification.load_soak.RunManager", return_value=fake_mgr), \
-         patch("qualification.load_soak.DeterministicDatabase") as fake_db_cls:
+         patch("qualification.integrity_runner.DeterministicDatabase") as fake_db_cls:
         fake_db_cls.return_value.query_json.return_value = []
         result = LoadSoakRunner(tmp_path / "evidence").run(
             run["id"], {"target_url": "http://x", "db_container": "db"}, window_seconds=0.1)
@@ -145,15 +149,22 @@ def test_load_soak_fails_on_domain_invariant_violation_even_with_zero_engine_err
     fake_mgr.stop.return_value = {"run_id": "sim-2", "status": "STOPPED",
                                   "metrics": {"errors": 0, "business_events": 10}}
     with patch("qualification.load_soak.RunManager", return_value=fake_mgr), \
-         patch("qualification.load_soak.DeterministicDatabase") as fake_db_cls:
+         patch("qualification.integrity_runner.DeterministicDatabase") as fake_db_cls:
+        # Order matches the shared IntegrityRunner.INVARIANT_CHECKS dict:
+        # ONE_ACTIVE_SESSION_PER_EMPLOYEE, NON_NEGATIVE_QUANTITIES (the one
+        # violated here), SESSION_TEMPORAL_ORDER, NO_DUPLICATE_QUANTITY_MOVEMENT,
+        # REFERENTIAL_INTEGRITY.
         fake_db_cls.return_value.query_json.side_effect = [
-            [{"id": 7, "good_qty": -1}],  # NEGATIVE_QUANTITIES: a real violation
+            [],
+            [{"id": 7, "good_qty": -1}],  # NON_NEGATIVE_QUANTITIES: a real violation
+            [],
+            [],
             [],
         ]
         result = LoadSoakRunner(tmp_path / "evidence").run(
             run["id"], {"target_url": "http://x", "db_container": "db"}, window_seconds=0.1)
     assert result["status"] == "FAILED"
-    assert result["invariant_violations"]["NEGATIVE_QUANTITIES"]
+    assert result["invariant_violations"]["NON_NEGATIVE_QUANTITIES"]
 
 
 def test_load_soak_persists_seed_for_exact_replay(service, tmp_path):
@@ -165,7 +176,7 @@ def test_load_soak_persists_seed_for_exact_replay(service, tmp_path):
     fake_mgr.stop.return_value = {"run_id": "sim-3", "status": "STOPPED",
                                   "metrics": {"errors": 0, "business_events": 5}}
     with patch("qualification.load_soak.RunManager", return_value=fake_mgr), \
-         patch("qualification.load_soak.DeterministicDatabase") as fake_db_cls:
+         patch("qualification.integrity_runner.DeterministicDatabase") as fake_db_cls:
         fake_db_cls.return_value.query_json.return_value = []
         result = LoadSoakRunner(tmp_path / "evidence").run(
             run["id"], {"target_url": "http://x", "db_container": "db"}, window_seconds=0.1, seed=424242)
