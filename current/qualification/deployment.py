@@ -354,6 +354,37 @@ class SandboxManager:
         self.conn.commit()
         return self.get_sandbox(sandbox_id)
 
+    def reap_orphans(self) -> list[dict[str, Any]]:
+        """Cleanup/retention (spec section 14): "Ensure cleanup works even
+        after ... QA Center restart. Retained resources must be visible in
+        UI/history so forgotten containers don't accumulate silently."
+
+        A crash (or an unclean kill -9 of the qualification process) can
+        leave a qa_deployments row claiming READY/STOPPED/DEPLOYING while
+        its containers are actually gone (removed by hand, by a host
+        reboot, or by `docker system prune`) -- or the inverse never
+        happens (this never touches a row whose containers still exist,
+        even if idle for a long time; "orphan" here means "the DB row and
+        reality have already diverged", not "has been running a while").
+        Call on QA Center startup (and safe to call any time, idempotent)
+        so the sandbox list never silently shows a sandbox that no longer
+        exists as if it were still usable.
+        """
+        reaped = []
+        for sandbox in self.list_sandboxes():
+            if sandbox["status"] in ("DESTROYED", "FAILED"):
+                continue
+            probe = subprocess.run(["docker", "inspect", sandbox["application_container"]],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if probe.returncode == 0:
+                continue  # container still exists -- not an orphan, whatever its age
+            self.conn.execute(
+                "UPDATE qa_deployments SET status='DESTROYED',destroyed_at=?,error=? WHERE id=?",
+                (now(), "orphaned: application container no longer exists (reaped by reap_orphans)", sandbox["id"]))
+            self.conn.commit()
+            reaped.append(self.get_sandbox(sandbox["id"]))
+        return reaped
+
     def reset(self, sandbox_id: str, artifact_path: Path, *, fixture_version: str) -> dict[str, Any]:
         """Bring a sandbox back to a known-fresh state. MESFlow has no
         in-app "reset" endpoint, and truncating tables under a running app
