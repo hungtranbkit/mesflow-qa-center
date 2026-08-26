@@ -70,13 +70,23 @@ CREATE TABLE IF NOT EXISTS qa_certifications (
   certified_at TEXT NOT NULL, invalidated_at TEXT,
   UNIQUE(artifact_id,environment_id,policy_key,policy_version)
 );
+-- Also the Sandbox Manager's own registry (spec: "Sandbox Manager
+-- consolidation") -- qa_deployments IS the sandbox table; sandbox_id ==
+-- this row's id, no second table was introduced. sandbox_type/
+-- environment_type/health/retained_at/destroyed_at are additive columns
+-- (see _apply_migrations below) so an existing installed database keeps
+-- working without a destructive migration.
 CREATE TABLE IF NOT EXISTS qa_deployments (
   id TEXT PRIMARY KEY, qualification_run_id TEXT NOT NULL REFERENCES qa_qualification_runs(id),
   namespace TEXT NOT NULL UNIQUE, status TEXT NOT NULL, application_container TEXT NOT NULL,
   database_container TEXT NOT NULL, network_name TEXT NOT NULL, volume_name TEXT NOT NULL,
   target_url TEXT NOT NULL DEFAULT '', database_identity TEXT NOT NULL,
   manifest_json TEXT NOT NULL DEFAULT '{}', runtime_json TEXT NOT NULL DEFAULT '{}',
-  started_at TEXT NOT NULL, ready_at TEXT, stopped_at TEXT, error TEXT NOT NULL DEFAULT ''
+  started_at TEXT NOT NULL, ready_at TEXT, stopped_at TEXT, error TEXT NOT NULL DEFAULT '',
+  sandbox_type TEXT NOT NULL DEFAULT 'EPHEMERAL', environment_type TEXT NOT NULL DEFAULT 'QA',
+  project TEXT NOT NULL DEFAULT 'mesflow', version TEXT NOT NULL DEFAULT '',
+  artifact_sha256 TEXT NOT NULL DEFAULT '', app_port INTEGER, health TEXT NOT NULL DEFAULT '',
+  retained_at TEXT, destroyed_at TEXT
 );
 -- Persisted at the end of every completed run (see coverage.snapshot()) so
 -- feature coverage remains auditable after the run's own ephemeral Docker
@@ -103,7 +113,43 @@ CREATE TABLE IF NOT EXISTS qa_replays (
   replay_scenario_run_id TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_qa_replays_original ON qa_replays(original_scenario_run_id);
+-- Resource Sampler (spec: "Resource Sampler"): one reusable sampling
+-- service, one table, usable by LONG_RUNNING_FACTORY_SIMULATION/LOAD/
+-- SOAK/CHAOS/RELEASE_QUALIFICATION alike -- see resource_sampler.py.
+CREATE TABLE IF NOT EXISTS qa_resource_samples (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, sandbox_id TEXT NOT NULL,
+  sampled_at TEXT NOT NULL, metrics_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_qa_resource_samples_run ON qa_resource_samples(run_id, sampled_at);
 """
+
+# Additive-only migrations for databases created before a given column
+# existed -- CREATE TABLE IF NOT EXISTS above never alters an
+# already-existing table, so a real long-lived install needs these to ever
+# see new columns. Mirrors engine/qa_store.py's own _apply_migrations
+# pattern (list of ALTER TABLE ADD COLUMN, applied idempotently).
+_MIGRATIONS = [
+    "ALTER TABLE qa_deployments ADD COLUMN sandbox_type TEXT NOT NULL DEFAULT 'EPHEMERAL'",
+    "ALTER TABLE qa_deployments ADD COLUMN environment_type TEXT NOT NULL DEFAULT 'QA'",
+    "ALTER TABLE qa_deployments ADD COLUMN project TEXT NOT NULL DEFAULT 'mesflow'",
+    "ALTER TABLE qa_deployments ADD COLUMN version TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE qa_deployments ADD COLUMN artifact_sha256 TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE qa_deployments ADD COLUMN app_port INTEGER",
+    "ALTER TABLE qa_deployments ADD COLUMN health TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE qa_deployments ADD COLUMN retained_at TEXT",
+    "ALTER TABLE qa_deployments ADD COLUMN destroyed_at TEXT",
+    "ALTER TABLE qa_qualification_runs ADD COLUMN run_kind TEXT NOT NULL DEFAULT 'RELEASE_QUALIFICATION'",
+]
+
+
+def _apply_migrations(conn: sqlite3.Connection) -> None:
+    for statement in _MIGRATIONS:
+        try:
+            conn.execute(statement)
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
+    conn.commit()
 
 
 def now() -> str:
@@ -114,4 +160,5 @@ def connect() -> sqlite3.Connection:
     conn = qa_store.connect()
     conn.executescript(SCHEMA)
     conn.commit()
+    _apply_migrations(conn)
     return conn

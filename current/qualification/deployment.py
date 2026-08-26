@@ -50,8 +50,23 @@ def _sha(path: Path) -> str:
     return digest.hexdigest()
 
 
-class ArtifactDeployment:
-    """Deploy one frozen MESFlow image bundle into an isolated Docker namespace."""
+class SandboxManager:
+    """The shared Sandbox Manager (architecture consolidation phase): one
+    isolated Docker namespace (network + volume + app container + db
+    container) per sandbox, registered in qa_deployments (sandbox_id ==
+    that row's id -- no second table). This IS the class that used to be
+    named ArtifactDeployment; every existing caller (upgrade.py,
+    recovery.py, kiosk_emulator.py, test_deployment.py, load_soak.py,
+    cli.py) keeps working unchanged via the ArtifactDeployment alias below
+    -- deploy()/destroy()/inspect_package()/logs() are untouched. This is
+    an in-place extension, not a parallel reimplementation.
+
+    Sandbox types: EPHEMERAL (default -- destroyed automatically once the
+    caller is done, unless retain()ed), PERSISTENT (kept until explicitly
+    destroyed), PRODUCTION_LIKE (reserved for a future real-config-shaped
+    sandbox; deploy() never points one at a real production database --
+    every sandbox here always gets its OWN fresh, isolated Postgres).
+    """
 
     def __init__(self, evidence_root: Path):
         self.conn = connect()
@@ -104,8 +119,10 @@ class ArtifactDeployment:
         deployment_id = f"dep-{uuid.uuid4().hex}"
         database_identity = f"{db}/mesflow_qa"
         self.conn.execute("""INSERT INTO qa_deployments(id,qualification_run_id,namespace,status,application_container,
-          database_container,network_name,volume_name,database_identity,started_at) VALUES(?,?,?,?,?,?,?,?,?,?)""",
-          (deployment_id, run_id, namespace, "DEPLOYING", app, db, network, volume, database_identity, now()))
+          database_container,network_name,volume_name,database_identity,started_at,artifact_sha256,
+          sandbox_type,environment_type,project) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+          (deployment_id, run_id, namespace, "DEPLOYING", app, db, network, volume, database_identity, now(),
+           run["sha256"], "EPHEMERAL", "QA", "mesflow"))
         self.conn.commit()
         temp = None
         try:
@@ -188,8 +205,10 @@ class ArtifactDeployment:
                        "target_url": target_url, "published_url": published_url, "joined_network": joined_network,
                        "ready": ready, "host": socket.gethostname(), "fixture_version": fixture_version}
             self.evidence.write_json(run_id, "runtime-identity.json", runtime, kind="RUNTIME_IDENTITY")
-            self.conn.execute("UPDATE qa_deployments SET status='READY',target_url=?,manifest_json=?,runtime_json=?,ready_at=? WHERE id=?",
-                              (target_url, json.dumps(manifest), json.dumps(runtime), now(), deployment_id))
+            self.conn.execute("""UPDATE qa_deployments SET status='READY',target_url=?,manifest_json=?,runtime_json=?,
+              ready_at=?,version=?,app_port=?,health='healthy' WHERE id=?""",
+                              (target_url, json.dumps(manifest), json.dumps(runtime), now(),
+                               str(manifest.get("version") or ""), port, deployment_id))
             self.conn.commit()
             return {"id": deployment_id, "namespace": namespace, "app_container": app, "db_container": db,
                     "network": network, "volume": volume, "target_url": target_url,
@@ -227,3 +246,130 @@ class ArtifactDeployment:
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(["docker", "network", "rm", f"{namespace}-net"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(["docker", "volume", "rm", f"{namespace}-pg"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Found by hand during the consolidation phase: destroy() never
+        # touched the sandbox's own qa_deployments row, so a sandbox
+        # listing kept showing a destroyed sandbox as still READY forever.
+        # Never overwrites a FAILED status -- that distinction (failed,
+        # then cleaned up) is worth keeping separate from a normal
+        # destroy of a healthy sandbox.
+        self.conn.execute("UPDATE qa_deployments SET status='DESTROYED',destroyed_at=? WHERE namespace=? AND status!='FAILED'",
+                          (now(), namespace))
+        self.conn.commit()
+
+    # ---- Sandbox Manager lifecycle (spec: "Sandbox Manager consolidation") ----
+
+    def list_sandboxes(self, *, status: str | None = None) -> list[dict[str, Any]]:
+        if status:
+            rows = self.conn.execute("SELECT * FROM qa_deployments WHERE status=? ORDER BY started_at DESC", (status,))
+        else:
+            rows = self.conn.execute("SELECT * FROM qa_deployments ORDER BY started_at DESC")
+        return [dict(r) for r in rows.fetchall()]
+
+    def get_sandbox(self, sandbox_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT * FROM qa_deployments WHERE id=?", (sandbox_id,)).fetchone()
+        return dict(row) if row else None
+
+    def _require_sandbox(self, sandbox_id: str) -> dict[str, Any]:
+        sandbox = self.get_sandbox(sandbox_id)
+        if not sandbox:
+            raise DeploymentError(f"unknown sandbox: {sandbox_id}")
+        return sandbox
+
+    def sandbox_logs(self, sandbox_id: str) -> dict[str, str]:
+        sandbox = self._require_sandbox(sandbox_id)
+        return self.logs(sandbox["application_container"], sandbox["database_container"])
+
+    def health(self, sandbox_id: str) -> dict[str, Any]:
+        """Live health probe -- never raises; a sandbox whose containers
+        are stopped/gone reads back as unhealthy, not an exception, so a
+        sandbox-listing UI can always merge this in unconditionally (same
+        contract engine/preview_manager.py's own runtime_state() already
+        established for the exact same reason)."""
+        sandbox = self._require_sandbox(sandbox_id)
+        target_url = sandbox["target_url"]
+        if not target_url:
+            result = {"healthy": False, "reason": "sandbox has no target_url yet"}
+        else:
+            try:
+                with urllib.request.urlopen(f"{target_url}/api/system/ready", timeout=3) as response:
+                    body = json.load(response)
+                result = {"healthy": bool(body.get("ok")), "detail": body}
+            except Exception as exc:
+                result = {"healthy": False, "reason": f"{type(exc).__name__}: {exc}"}
+        self.conn.execute("UPDATE qa_deployments SET health=? WHERE id=?",
+                         ("healthy" if result["healthy"] else "unhealthy", sandbox_id))
+        self.conn.commit()
+        return result
+
+    def stop(self, sandbox_id: str) -> dict[str, Any]:
+        """STOPPED: containers paused (docker stop, not rm) -- namespace,
+        network, volume, and all state are preserved; start() brings the
+        exact same sandbox back. Distinct from destroy(), which is
+        permanent."""
+        sandbox = self._require_sandbox(sandbox_id)
+        for container in (sandbox["application_container"], sandbox["database_container"]):
+            subprocess.run(["docker", "stop", "--time", "10", container], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.conn.execute("UPDATE qa_deployments SET status='STOPPED',stopped_at=?,health='' WHERE id=?", (now(), sandbox_id))
+        self.conn.commit()
+        return self.get_sandbox(sandbox_id)
+
+    def start(self, sandbox_id: str, *, timeout_seconds: int = 150) -> dict[str, Any]:
+        """Resume a STOPPED sandbox -- same containers, same data, same
+        target_url. Waits for real readiness before reporting READY,
+        exactly like deploy()'s own first-boot wait (never trusts
+        `docker start`'s own exit code alone)."""
+        sandbox = self._require_sandbox(sandbox_id)
+        for container in (sandbox["database_container"], sandbox["application_container"]):
+            _run(["docker", "start", container])
+        target_url = sandbox["target_url"]
+        deadline = time.time() + timeout_seconds
+        ready = None
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen(f"{target_url}/api/system/ready", timeout=3) as response:
+                    ready = json.load(response)
+                if ready.get("ok"):
+                    break
+            except Exception:
+                time.sleep(1)
+        status = "READY" if ready and ready.get("ok") else "FAILED"
+        self.conn.execute("UPDATE qa_deployments SET status=?,health=? WHERE id=?",
+                         (status, "healthy" if status == "READY" else "unhealthy", sandbox_id))
+        self.conn.commit()
+        if status != "READY":
+            raise DeploymentError(f"sandbox {sandbox_id} did not become ready again after start()")
+        return self.get_sandbox(sandbox_id)
+
+    def retain(self, sandbox_id: str) -> dict[str, Any]:
+        """Mark PERSISTENT: the caller's own default-ephemeral cleanup
+        (`if not keep_environment: deployer.destroy(...)`) is a decision
+        each suite module already makes for itself; this is the
+        complementary, explicit "keep for debug" marker so a sandbox
+        listing can show retained sandboxes distinctly instead of an
+        operator having to remember which container names they meant to
+        keep."""
+        self._require_sandbox(sandbox_id)
+        self.conn.execute("UPDATE qa_deployments SET sandbox_type='PERSISTENT',retained_at=? WHERE id=?",
+                          (now(), sandbox_id))
+        self.conn.commit()
+        return self.get_sandbox(sandbox_id)
+
+    def reset(self, sandbox_id: str, artifact_path: Path, *, fixture_version: str) -> dict[str, Any]:
+        """Bring a sandbox back to a known-fresh state. MESFlow has no
+        in-app "reset" endpoint, and truncating tables under a running app
+        risks leaving cached/in-memory state inconsistent with the DB --
+        the only genuinely safe reset is the same one deploy() already
+        does for a brand new sandbox: destroy this one, deploy a fresh one
+        for the SAME qualification run. The old sandbox_id stops existing
+        (status DESTROYED); the returned dict is the new sandbox."""
+        sandbox = self._require_sandbox(sandbox_id)
+        run_id = sandbox["qualification_run_id"]
+        self.destroy(sandbox["namespace"])
+        return self.deploy(run_id, artifact_path, fixture_version=fixture_version)
+
+
+# Backward-compatible alias: every existing caller imports ArtifactDeployment
+# by name (upgrade.py, recovery.py, kiosk_emulator.py, test_deployment.py,
+# load_soak.py, cli.py, tests/*). Renaming in place rather than keeping a
+# second parallel implementation.
+ArtifactDeployment = SandboxManager
