@@ -53,7 +53,7 @@ STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__)
 app.register_blueprint(qualification_bp)
-APP_VERSION = "1.28.3"
+APP_VERSION = "1.29.0"
 QA_PROFILE = os.environ.get("MESFLOW_QA_PROFILE", "LOCAL").strip().upper()
 if QA_PROFILE not in {"LOCAL", "PRODUCTION_TEST"}:
     raise RuntimeError("MESFLOW_QA_PROFILE must be LOCAL or PRODUCTION_TEST")
