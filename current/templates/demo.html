@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MESFlow Demo Center V{{ app_version }}</title>
+  <link rel="stylesheet" href="/static/demo.css?v={{ app_version }}">
+</head>
+<body>
+<div id="demoToast" class="toast" hidden></div>
+<header class="demo-topbar">
+  <div class="brand-block"><div class="brand-mark">MF</div><div><span class="eyebrow">MESFLOW PRESENTATION</span><h1>Demo Center</h1><p>Trình diễn quy trình sản xuất thật bằng browser automation</p></div></div>
+  <div class="top-actions"><span id="targetChip" class="target-chip">Target: {{ target_url }}</span><a class="ghost-link" href="/">← QA Center</a></div>
+</header>
+<main class="demo-shell">
+  <aside class="control-rail">
+    <section class="panel credential-panel">
+      <div class="panel-head"><div><span class="kicker">01</span><h2>Kết nối MESFlow</h2></div><span id="authBadge" class="status neutral">Chưa kiểm tra</span></div>
+      <label><span>Target</span><select id="demoTargetPreset">
+        <option value="docker">Docker MESFlow</option>
+        <option value="local">Local Host</option>
+        <option value="custom">Custom URL</option>
+      </select></label>
+      <label><span>Target URL</span><input id="demoTargetUrl" value="{{ target_url }}" inputmode="url" spellcheck="false" placeholder="http://mesflow-app:8080"></label>
+      <div class="target-presets"><button type="button" data-target="http://mesflow-app:8080">Docker</button><button type="button" data-target="http://host.docker.internal:8080">Local Host</button></div>
+      <p class="helper target-help">Local Host dùng <code>host.docker.internal</code> vì 127.0.0.1 bên trong container không phải máy host.</p>
+      <label><span>Tài khoản</span><input id="demoUsername" value="{{ config.username }}" autocomplete="username"></label>
+      <label><span>Mật khẩu</span><input id="demoPassword" type="password" value="{{ config.password }}" autocomplete="current-password"></label>
+      <button id="checkDemoAuth" class="primary full">Kiểm tra đăng nhập</button>
+      <p id="authMessage" class="helper">Demo chỉ chạy khi credential login trực tiếp vào MESFlow thành công.</p>
+    </section>
+
+    <section class="panel scenario-panel">
+      <div class="panel-head"><div><span class="kicker">02</span><h2>Kịch bản</h2></div><span id="demoStatus" class="status neutral">READY</span></div>
+      <label><span>Scenario</span><select id="demoScenario">
+        <option value="full-production">Full Production Demo</option>
+        <option value="planning-po">Planning & Production Order</option>
+        <option value="kiosk-realtime">Kiosk & Realtime</option>
+        <option value="quality-rework">Quality / Defect / Rework</option>
+        <option value="trace-audit">Traceability & Audit</option>
+        <option value="feature-tour">MESFlow Feature Tour</option>
+      </select></label>
+      <p id="demoScenarioDesc" class="helper">Template → PO → Kiosk → Session → Material Flow → Dashboard → Trace/Audit</p>
+      <div class="two-col">
+        <label><span>Mode</span><select id="demoMode"><option value="auto" selected>Auto</option><option value="presenter">Presenter</option><option value="manual">Manual</option></select></label>
+        <label><span>Tốc độ</span><select id="demoPace"><option value="0.5">Nhanh</option><option value="1" selected>Bình thường</option><option value="1.7">Chậm</option></select></label>
+      </div>
+      <button id="runDemo" class="primary full" disabled>▶ Chạy Demo</button>
+    </section>
+
+    <section class="panel case-panel">
+      <div class="panel-head"><div><span class="kicker">03</span><h2>Test Case Monitor</h2></div><span id="demoCaseCounter" class="status neutral">0/0</span></div>
+      <div class="case-card">
+        <strong id="demoCaseTitle">Chọn scenario để xem testcase</strong>
+        <p id="demoCaseGoal" class="helper">Mục tiêu kiểm thử sẽ hiện ở đây.</p>
+        <div class="io-box"><span>INPUT</span><code id="demoCaseInput">—</code></div>
+        <div class="io-box expected"><span>EXPECTED OUTPUT</span><code id="demoCaseExpected">—</code></div>
+      </div>
+      <div id="demoPlan" class="plan-list"><div class="empty">Chưa có kế hoạch test.</div></div>
+    </section>
+
+    <section class="panel progress-panel">
+      <div class="panel-head"><div><span class="kicker">04</span><h2>Tiến trình</h2></div><span id="demoProgressPct" class="status neutral">0%</span></div>
+      <div class="current-step"><span>Bước hiện tại</span><strong id="demoCurrentStep">Chưa chạy</strong></div>
+      <div id="demoSteps" class="step-list"><div class="empty">Các bước sẽ xuất hiện ở đây.</div></div>
+    </section>
+
+    <section class="panel data-panel">
+      <div class="panel-head"><div><span class="kicker">05</span><h2>Generated Data</h2></div><span id="demoDataStatus" class="status neutral">NONE</span></div>
+      <p id="demoDataSummary" class="helper">Dữ liệu của mỗi run được giữ lại để review/debug.</p>
+      <div class="data-actions"><button id="viewGeneratedData" disabled>View Generated Data</button><button id="openMesflow" disabled>Open MESFlow</button><button id="cleanDemoData" class="danger" disabled>Clean Demo Data</button></div>
+      <h3>Demo Runs</h3><div id="demoRunHistory" class="run-history"><div class="empty">Chưa có run có ownership.</div></div>
+    </section>
+  </aside>
+
+  <section class="stage-panel">
+    <div class="stage-toolbar">
+      <div><span id="demoViewLabel" class="view-label">LIVE VIEW</span><span id="demoLiveHint" class="stage-hint">Ảnh cập nhật từ Chromium automation</span></div>
+      <div class="controls">
+        <button id="demoPrev" disabled>← Previous</button>
+        <button id="demoNextShot" disabled>Next →</button>
+        <button id="demoReturnLive" disabled>Return Live</button>
+        <span class="divider"></span>
+        <button id="pauseDemo" disabled>⏸ Pause</button>
+        <button id="resumeDemo" disabled>▶ Resume / Next Case</button>
+        <button id="stopDemo" class="danger" disabled>■ Stop</button>
+      </div>
+    </div>
+    <div class="execution-strip">
+      <div class="action-badge" id="demoActionKind">IDLE</div>
+      <div class="action-main"><strong id="demoActionTarget">Chưa có thao tác</strong><span id="demoActionDetail">Khi demo chạy, focus/click/type/wait sẽ hiện tại đây.</span></div>
+      <div class="heartbeat"><span id="demoHeartbeatDot"></span><span id="demoHeartbeat">Idle</span></div>
+    </div>
+    <div class="browser-stage">
+      <div class="browser-chrome"><span></span><span></span><span></span><div class="address">MESFlow Live Browser</div></div>
+      <div class="viewport"><img id="demoLiveImage" src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=" alt="Live demo view" hidden><div id="demoLiveEmpty" class="stage-empty"><div class="stage-icon">▶</div><h3>Sẵn sàng trình diễn</h3><p>Kiểm tra đăng nhập, chọn scenario rồi bấm “Chạy Demo”.</p></div></div>
+    </div>
+    <div id="demoErrorPanel" class="demo-error-panel" hidden>
+      <div class="demo-error-head"><strong>TEST ERROR / GPT HANDOFF</strong><div class="bug-report-actions"><button id="demoCopyBug" type="button">Copy for GPT</button><button id="demoDownloadBug" type="button">Download Report</button><button id="demoDownloadBundle" type="button">Evidence ZIP</button><button id="demoErrorDismiss" type="button">Ẩn</button></div></div>
+      <div class="demo-error-grid"><span>Case</span><code id="demoErrorCase">—</code><span>Action</span><code id="demoErrorAction">—</code><span>Target</span><code id="demoErrorTarget">—</code><span>URL</span><code id="demoErrorUrl">—</code></div>
+      <pre id="demoErrorMessage">—</pre>
+      <details class="bug-report-preview"><summary>GPT-ready report preview</summary><pre id="demoBugPreview">Bấm “Copy for GPT” để tạo report đầy đủ.</pre></details>
+    </div>
+    <div id="demoActivityLog" class="activity-log"><div class="empty">Realtime action log sẽ xuất hiện ở đây.</div></div>
+    <div class="stage-footer"><span id="demoReviewLabel"></span><span id="runIdLabel">Chưa có phiên demo</span></div>
+  </section>
+</main>
+<dialog id="generatedDataDialog" class="data-dialog"><form method="dialog"><button class="dialog-close" aria-label="Close">×</button></form><h2>Generated Data</h2><div id="generatedDataBody"></div></dialog>
+<dialog id="cleanupDialog" class="data-dialog"><h2>Clean generated data?</h2><div id="cleanupConfirmBody"></div><p>Existing MESFlow data will not be changed.</p><div class="dialog-actions"><button id="cancelCleanup" type="button">CANCEL</button><button id="confirmCleanup" class="danger" type="button">CLEAN DATA</button></div></dialog>
+<script src="/static/demo.js?v={{ app_version }}"></script>
+</body>
+</html>

@@ -1,0 +1,53 @@
+FROM python:3.12-slim-bookworm
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONUTF8=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
+WORKDIR /app
+
+# Heavy, rarely-changing QA runtime dependencies live in this cached base.
+# scripts/build-release.sh fingerprints this file + requirements.txt and only
+# rebuilds the base when that fingerprint changes.
+#
+# docker-ce-cli (client only, no daemon/containerd) is required by
+# engine/preview_manager.py: the UI Preview Lab shells out to `docker` to
+# stand up its own app+db+network per environment. It talks to the HOST
+# Docker daemon over the bind-mounted /var/run/docker.sock (see compose.yml
+# and docker/compose.yml) -- Docker-outside-of-Docker, the same pattern
+# deploy-agent already uses.
+#
+# docker-compose-plugin (`docker compose ...`, the v2 subcommand form) is
+# required by qualification/test_deployment.py: that suite deliberately
+# does NOT reuse ArtifactDeployment's hand-built `docker run` -- its whole
+# point is proving the artifact's OWN packaged compose.yml (the real
+# install/deploy contract) actually works, which needs the real `docker
+# compose` command. Found missing by hand (2026-08-26): every OTHER
+# qualification suite only ever calls plain `docker run`/`load`/`network`/
+# `inspect`, so this gap only shows up once test_deployment.py actually
+# tries to run.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl gnupg procps iproute2 tini \
+    && install -d -m 0755 /usr/share/postgresql-common/pgdg \
+    && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+      -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+    && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
+      > /etc/apt/sources.list.d/pgdg.list \
+    && install -d -m 0755 /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" \
+      > /etc/apt/sources.list.d/docker.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends postgresql-client-17 docker-ce-cli docker-compose-plugin \
+    && pg_dump --version \
+    && docker --version \
+    && docker compose version \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt /tmp/qa-runtime/requirements.txt
+RUN pip install --no-cache-dir --upgrade pip wheel setuptools \
+    && pip install --no-cache-dir -r /tmp/qa-runtime/requirements.txt \
+    && python -m playwright install --with-deps chromium \
+    && rm -rf /root/.cache/pip /var/lib/apt/lists/*

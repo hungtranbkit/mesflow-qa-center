@@ -1,0 +1,11 @@
+{
+  "version": "mesflow-core-v1",
+  "description": "Deterministic qualification seed; all identifiers use the QA namespace.",
+  "employees": [{"id": "QA-EMP-001", "card": "QA-CARD-001", "active": true}],
+  "production_orders": [{"id": "QA-PO-001", "status": "ACTIVE", "deadline": "2030-01-02T08:00:00+00:00"}],
+  "parts": [{"id": "QA-PART-001", "production_order_id": "QA-PO-001"}],
+  "operations": [{"id": "QA-OP-001", "part_id": "QA-PART-001", "status": "ACTIVE", "target_qty": 100, "produced_qty": 0}],
+  "sessions": [{"id": "QA-SESSION-HIST-001", "employee_id": "QA-EMP-001", "operation_id": "QA-OP-001", "status": "FINISHED", "started_at": "2030-01-01T08:00:00+00:00", "ended_at": "2030-01-01T09:00:00+00:00", "good_qty": 5, "defect_qty": 0}],
+  "repairs": [{"id": "QA-REPAIR-001", "operation_id": "QA-OP-001", "status": "WAITING"}],
+  "exceptions": [{"id": "QA-EXCEPTION-001", "type": "LONG_OPEN_SESSION", "status": "RESOLVED"}]
+}

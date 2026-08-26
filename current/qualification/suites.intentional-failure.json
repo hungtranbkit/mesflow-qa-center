@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.0.0",
+  "purpose": "Qualification-center self-test: proves failed commands persist evidence and block certification.",
+  "suites": [
+    {
+      "key": "intentional_failure_probe",
+      "layer": "recovery",
+      "profiles": ["quick", "full"],
+      "command": ["python3", "-c", "import sys; print('INTENTIONAL_QUALIFICATION_FAILURE'); sys.exit(23)"],
+      "required": true,
+      "timeout_seconds": 30
+    }
+  ]
+}

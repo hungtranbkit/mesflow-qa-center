@@ -20,28 +20,16 @@ class FakeClient:
 def setup_function(): agent._runs.clear()
 
 
-def test_cleanup_requires_no_active_run():
+def test_legacy_prefix_cleanup_is_gone_even_with_active_run():
     agent._runs['r']=agent.RunState('r','functional')
-    r=agent.app.test_client().post('/api/cleanup',json={'confirm':'DELETE QA DATA'}); assert r.status_code==409
+    r=agent.app.test_client().post('/api/cleanup',json={'confirm':'DELETE QA DATA'})
+    assert r.status_code==410
+    assert r.json['error']=='LEGACY_QA_CLEANUP_DISABLED'
 
 
-def test_cleanup_requires_exact_confirmation():
-    r=agent.app.test_client().post('/api/cleanup',json={}); assert r.status_code==400 and r.json['error']=='CONFIRMATION_REQUIRED'
-
-
-def test_cleanup_preview_never_includes_real_records(monkeypatch):
-    f=FakeClient(); monkeypatch.setattr(agent,'load_config',lambda:{'base_url':'http://x','internal_base_url':'','username':'','password':''})
-    monkeypatch.setattr(agent,'session_from_config',lambda cfg:f)
-    r=agent.app.test_client().post('/api/cleanup',json={'preview':True}); assert r.status_code==200
-    assert r.json['counts']=={'production_orders':1,'employees':1,'stations':1}
-    assert r.json['preview']['production_orders'][0]['code'].startswith('QAV')
-    assert not f.deleted
-
-
-def test_cleanup_delete_order_and_scope(monkeypatch):
-    f=FakeClient(); monkeypatch.setattr(agent,'load_config',lambda:{'base_url':'http://x','internal_base_url':'','username':'','password':''})
-    monkeypatch.setattr(agent,'session_from_config',lambda cfg:f)
-    r=agent.app.test_client().post('/api/cleanup',json={'confirm':'DELETE QA DATA'}); assert r.status_code==200 and r.json['counts']['failed']==0
-    urls=[x[0] for x in f.deleted]
-    assert urls[0].endswith('/api/production-orders/1/force') and urls[1].endswith('/api/employees/3') and urls[2].endswith('/api/stations/5')
-    assert all('/2' not in x and '/4' not in x and '/6' not in x for x in urls)
+def test_legacy_cleanup_never_calls_target_api(monkeypatch):
+    target=FakeClient()
+    monkeypatch.setattr(agent,'session_from_config',lambda cfg:target)
+    r=agent.app.test_client().post('/api/cleanup',json={'preview':True})
+    assert r.status_code==410
+    assert not target.deleted

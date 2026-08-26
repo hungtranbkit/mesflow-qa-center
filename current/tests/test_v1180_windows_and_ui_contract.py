@@ -25,5 +25,5 @@ def test_ui_controls_cover_all_test_modes():
 def test_dashboard_has_cleanup_and_connection_controls():
     h=(ROOT/'templates/index.html').read_text(encoding='utf-8')
     j=(ROOT/'static/app.js').read_text(encoding='utf-8')
-    for token in ['/api/cleanup','/api/check-connection','/api/config','/api/status']:
+    for token in ['/api/database/demo/reset','/api/check-connection','/api/config','/api/status']:
         assert token in j

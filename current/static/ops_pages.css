@@ -1,0 +1,80 @@
+/* Shared styles for the v1.23.0 ops screens: Preview Lab, Regression, Bug Center.
+   Loaded together with app.css so cards/pills/buttons/toolbars stay visually
+   consistent with the main dashboard. Only page-specific layout lives here. */
+.topnav{display:flex;gap:4px;flex-wrap:wrap;padding:10px max(24px,calc((100vw - 1440px)/2));background:#0b1220;border-bottom:1px solid #1f2b42}
+.topnav a{color:#a9bdd6;text-decoration:none;font-size:13px;font-weight:650;padding:8px 12px;border-radius:8px}
+.topnav a:hover{background:#ffffff14;color:#fff}
+.topnav a.active{background:#2563eb;color:#fff}
+.isolation-banner{max-width:1440px;margin:16px auto 0;padding:12px 16px;border-radius:10px;background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46;display:flex;align-items:center;gap:10px;font-size:13px}
+.isolation-banner strong{font-size:11px;letter-spacing:.06em;background:#065f46;color:#fff;padding:4px 8px;border-radius:6px}
+.status-card{display:flex;flex-direction:column;gap:14px}
+.status-headline{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.status-headline .pill{font-size:14px;padding:8px 14px}
+.status-rows{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0;border:1px solid #e4eaf2;border-radius:10px;overflow:hidden}
+.status-rows>div{display:flex;justify-content:space-between;gap:10px;padding:10px 14px;border-bottom:1px solid #eef1f6;border-right:1px solid #eef1f6;font-size:13px}
+.status-rows>div span{color:#8491a6;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.03em}
+.status-rows>div b{font-family:"Cascadia Code",Consolas,monospace;font-weight:650;text-align:right;word-break:break-word}
+.phase-panel{display:flex;align-items:center;gap:14px;padding:22px;border-radius:12px;background:#eff6ff;border:1px solid #bfdbfe}
+.phase-panel .spinner{width:22px;height:22px;border-radius:50%;border:3px solid #93c5fd;border-top-color:#1d4ed8;animation:spin 0.8s linear infinite;flex:none}
+@keyframes spin{to{transform:rotate(360deg)}}
+.phase-panel.error{background:#fff3f3;border-color:#f1c7c7}
+.phase-panel h3{margin:0 0 4px;font-size:15px}
+.phase-panel p{margin:0;color:#5f6878;font-size:13px}
+.empty-preview{padding:40px 24px;text-align:center;border:1px dashed #ccd6e4;border-radius:14px;background:#fbfdff}
+.empty-preview h3{margin:0 0 8px;font-size:17px}
+.empty-preview p{margin:0 0 18px;color:#69768b}
+.start-preview-form{display:grid;gap:12px;max-width:420px;margin:0 auto}
+.start-preview-form label{display:flex;flex-direction:column;gap:6px;text-align:left;font-size:12px;font-weight:700;color:#536177}
+.start-preview-form select,.start-preview-form input{padding:10px 12px;border:1px solid #cad5e4;border-radius:9px}
+.tech-details{margin-top:4px;border-top:1px dashed #dfe6f1;padding-top:12px}
+.tech-details summary{cursor:pointer;font-weight:700;font-size:13px;color:#536177}
+.tech-details .status-rows{margin-top:10px}
+.data-dialog{width:min(620px,calc(100vw - 32px));border:1px solid #cad5e4;border-radius:12px;padding:20px;box-shadow:0 25px 80px rgba(0,0,0,.25)}
+.data-dialog::backdrop{background:rgba(15,23,42,.45)}
+.data-dialog h2{margin:0 0 14px}
+.dialog-close{float:right;font-size:20px;padding:2px 9px;background:transparent;color:#536177}
+.ops-topbar{padding:20px max(24px,calc((100vw - 1440px)/2));background:linear-gradient(120deg,#0f172a,#172554 55%,#1d4ed8);color:#fff;display:flex;justify-content:space-between;gap:24px;align-items:center;box-shadow:0 8px 30px #0f172a26}
+.ops-topbar h1{font-size:24px;margin:3px 0}
+.ops-topbar p{margin:0;color:#cbd5e1;font-size:13px}
+.ops-topbar .ghost-link{border:1px solid #ffffff40;color:#fff;text-decoration:none;padding:8px 12px;border-radius:9px;font-size:13px;font-weight:650}
+.ops-topbar .ghost-link:hover{background:#ffffff1a}
+.ops-main{max-width:1440px;margin:0 auto;padding:24px}
+.ops-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px}
+.preset-card{display:flex;flex-direction:column;gap:10px}
+.preset-card h3{margin:0;font-size:15px}
+.preset-card p{margin:0;color:#69768b;font-size:12px;flex:1}
+.ops-table{width:100%;border-collapse:collapse;font-size:13px}
+.ops-table th{text-align:left;color:#718096;font-size:11px;text-transform:uppercase;letter-spacing:.04em;padding:8px 10px;border-bottom:1px solid #dfe6f1}
+.ops-table td{padding:10px;border-bottom:1px solid #eef1f6;vertical-align:top}
+.ops-table tr:last-child td{border-bottom:0}
+.row-actions{display:flex;flex-wrap:wrap;gap:6px}
+.row-actions button,.row-actions a.btn-link{padding:6px 10px;font-size:12px}
+.env-card{display:flex;flex-direction:column;gap:8px;margin-bottom:10px}
+.env-head{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.env-head strong{font-family:"Cascadia Code",Consolas,monospace;font-size:13px}
+.env-meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;font-size:12px;color:#536177}
+.env-meta span{display:block;color:#8491a6;font-size:10px;text-transform:uppercase;letter-spacing:.03em}
+.env-creds{background:#f8fbff;border:1px dashed #b9d3f5;border-radius:8px;padding:8px 10px;font-family:"Cascadia Code",Consolas,monospace;font-size:12px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.env-error{background:#fff3f3;border:1px solid #f1c7c7;border-radius:8px;padding:8px 10px;color:#991b1b;font-size:12px}
+.pill.STABLE,.pill.RESOLVED,.pill.READY,.pill.PASS{background:#dcfce7;color:#166534}
+.pill.NEW,.pill.CREATING,.pill.STARTING,.pill.SEEDING,.pill.RUNNING,.pill.COVERED{background:#dbeafe;color:#1d4ed8}
+.pill.CHANGED,.pill.FIXING,.pill.WARNING{background:#fef3c7;color:#92400e}
+.pill.BROKEN,.pill.FAILED,.pill.REGRESSION_RISK,.pill.REGRESSION,.pill.OPEN{background:#fee2e2;color:#991b1b}
+.pill.STOPPED,.pill.DELETED,.pill.IGNORED,.pill.READY_FOR_VERIFY{background:#e9eef5;color:#536177}
+.filter-row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px}
+.filter-row label{display:flex;flex-direction:column;gap:5px;font-size:12px;font-weight:700;color:#536177}
+.filter-row select,.filter-row input{padding:9px 10px;border:1px solid #cad5e4;border-radius:8px;background:#fbfdff;min-width:150px}
+.bug-card{margin-bottom:10px}
+.bug-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;flex-wrap:wrap}
+.bug-head h3{margin:0;font-size:14px}
+.bug-id{font-family:"Cascadia Code",Consolas,monospace;font-size:11px;color:#8491a6}
+.bug-body{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px;font-size:12px}
+.bug-body .box{background:#f8fafc;border-radius:8px;padding:8px 10px}
+.bug-body .box span{display:block;color:#8491a6;font-size:10px;text-transform:uppercase;margin-bottom:3px}
+.decision-row{display:grid;grid-template-columns:220px 100px 1fr;gap:10px;padding:8px 10px;border-bottom:1px solid #eef1f6;font-size:13px;align-items:center}
+.decision-row:last-child{border-bottom:0}
+.decision-row span.reason{color:#69768b;font-size:12px}
+.summary-pills{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.summary-pills .pill{font-size:13px;padding:8px 14px}
+code.inline{background:#eef2f7;padding:2px 6px;border-radius:5px;font-size:12px}
+@media(max-width:900px){.decision-row{grid-template-columns:1fr}.bug-body{grid-template-columns:1fr}}

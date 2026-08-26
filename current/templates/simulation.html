@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MESFlow QA Center · Factory Soak</title>
+  <link rel="stylesheet" href="/static/app.css?v={{ app_version }}">
+  <link rel="stylesheet" href="/static/ops_pages.css?v={{ app_version }}">
+</head>
+<body>
+<nav class="topnav">
+  <a href="/">Dashboard</a>
+  <a href="/preview-lab">UI Preview Lab</a>
+  <a href="/regression">Regression Protection</a>
+  <a href="/bugs">Bugs</a>
+  <a href="/demo">Demo Center</a>
+  <a href="/simulations" class="active">Factory Soak</a>
+</nav>
+<div id="toast" class="toast" hidden></div>
+<header class="ops-topbar">
+  <div><div class="eyebrow">MESFLOW TEST AUTOMATION</div><h1>Long-Running Factory Simulation</h1>
+    <p>Phase A: persistent scheduler + realistic actor model. Continue-on-failure soak against a live UI Preview Lab environment -- test case fails → incident recorded → simulation keeps running.</p></div>
+  <a class="ghost-link" href="/">← QA Center</a>
+</header>
+<main class="ops-main">
+  <section class="section-title simple"><div><h2>Start a run</h2><p>Point this at an already-running UI Preview Lab environment (Preview Lab tab). One active run at a time in Phase A.</p></div></section>
+  <div class="card">
+    <div class="form-grid">
+      <label><span>Preview environment</span>
+        <select id="previewSelect"><option value="">Đang tải danh sách môi trường…</option></select>
+      </label>
+      <label><span>Factory profile</span>
+        <select id="profileSelect">
+          <option value="SMALL_FACTORY">SMALL_FACTORY (~15 employees, 2 kiosks)</option>
+          <option value="MEDIUM_FACTORY">MEDIUM_FACTORY (~40 employees, 6 kiosks)</option>
+          <option value="LARGE_FACTORY">LARGE_FACTORY (~100 employees, 15 kiosks)</option>
+        </select>
+      </label>
+      <label><span>Duration</span>
+        <select id="durationSelect">
+          <option value="8_HOURS">8 hours</option>
+          <option value="24_HOURS">24 hours</option>
+          <option value="3_DAYS">3 days</option>
+          <option value="7_DAYS">7 days</option>
+          <option value="CONTINUOUS">Continuous</option>
+        </select>
+      </label>
+      <label><span>Speed</span>
+        <select id="speedSelect">
+          <option value="REAL_TIME">Real Time (default)</option>
+          <option value="2X">2x</option>
+          <option value="5X">5x</option>
+          <option value="10X">10x</option>
+        </select>
+      </label>
+    </div>
+    <div class="toolbar">
+      <button id="startBtn" class="primary">Start simulation</button>
+      <button id="stopBtn" class="secondary" disabled>Stop run</button>
+      <span id="startMsg" class="muted"></span>
+    </div>
+  </div>
+
+  <section class="section-title simple" style="margin-top:26px"><div><h2>Run status</h2><p>Polls every 5 seconds while a run is active.</p></div></section>
+  <div class="card">
+    <div id="statusBody"><div class="empty">No active run.</div></div>
+  </div>
+
+  <section class="section-title simple" style="margin-top:26px"><div><h2>New/known incidents (SIM:*)</h2><p>Same Bug Center dedup/occurrence tracking as Functional QA -- a repeated failure increments occurrences, it does not spam a new record.</p></div></section>
+  <div class="card">
+    <table class="ops-table">
+      <thead><tr><th>Bug</th><th>Severity</th><th>Type</th><th>Title</th><th>Status</th><th>Occurrences</th><th>Last seen</th></tr></thead>
+      <tbody id="incidentBody"><tr><td colspan="7" class="empty">No incidents yet.</td></tr></tbody>
+    </table>
+  </div>
+</main>
+<script src="/static/simulation.js?v={{ app_version }}"></script>
+</body>
+</html>

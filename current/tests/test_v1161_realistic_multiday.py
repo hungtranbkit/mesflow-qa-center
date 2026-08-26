@@ -12,4 +12,7 @@ def test_real_time_scheduler_contract():
 def test_clean_installer_version():
     s=(ROOT/'install.sh').read_text(encoding="utf-8")
     assert_version_contract(ROOT)
-    assert 'rsync -a --delete' in s
+    assert 'exec "$HERE/../install.sh" "$@"' in s
+    wrapper=(ROOT.parent/'install.sh').read_text(encoding="utf-8")
+    assert 'rsync -a' in wrapper
+    assert "--exclude 'runtime/'" in wrapper

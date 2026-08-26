@@ -4,9 +4,10 @@ let lastLogText="";
 let refreshBusy=false;
 const $=id=>document.getElementById(id);
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const esc=value=>String(value??'').replace(/[&<>\"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[ch]));
 function showToast(message,type='error'){const el=$('toast');el.textContent=message;el.className='toast '+type;el.hidden=false;clearTimeout(showToast.timer);showToast.timer=setTimeout(()=>el.hidden=true,6000)}
 function setConnection(ok,text){$('connectionStatus').textContent=text||'';$('connectionBadge').textContent=ok?'Đã kết nối':'Kết nối lỗi';$('connectionBadge').className='pill '+(ok?'ok':'bad')}
-function configPayload(){const internal=$('internal_base_url').value.trim()||'http://mesflow-app:8080';return{base_url:internal,internal_base_url:internal,username:$('username').value.trim(),password:$('password').value,verify_ssl:false}}
+function configPayload(){const internal=$('internal_base_url').value.trim()||'http://mesflow-app:8080';return{base_url:internal,internal_base_url:internal,username:$('username').value.trim(),password:$('password').value,database_url:$('database_url')?$('database_url').value.trim():'',verify_ssl:$('verify_ssl').checked}}
 async function requestJson(url,options={}){let response;try{response=await fetch(url,options)}catch(e){throw new Error('Không gọi được QA Agent: '+e.message)}let body;const text=await response.text();try{body=text?JSON.parse(text):{}}catch(e){throw new Error(`API ${url} trả dữ liệu không hợp lệ (HTTP ${response.status}): ${text.slice(0,300)}`)}if(!response.ok||body.ok===false)throw new Error(body.error||body.message||`HTTP ${response.status}`);return body}
 async function post(url,data={}){return requestJson(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)})}
 async function withButton(button,fn){const old=button.textContent;button.disabled=true;button.textContent='Đang xử lý…';try{return await fn()}catch(e){showToast(e.message,'error');$('logState').textContent='Lỗi: '+e.message;throw e}finally{button.disabled=false;button.textContent=old}}
@@ -34,7 +35,7 @@ async function stopRun(id){try{await post('/api/stop/'+id);await refresh(true)}c
 async function selectRun(id){selectedRun=id;$('selectedRun').textContent=id;await loadLogs(true)}
 async function loadLogs(force=false){if(!selectedRun||(logPaused&&!force))return;try{const box=$('logs');const oldText=lastLogText;const wasNearBottom=(box.scrollHeight-box.scrollTop-box.clientHeight)<48;const oldTop=box.scrollTop;const j=await requestJson('/api/runs/'+encodeURIComponent(selectedRun)+'/logs');const next=(j.lines||[]).join('\n');lastLogText=next;if(next!==oldText){box.textContent=next||'Phiên đã tạo nhưng chưa có log.';if(force||($('autoScroll').checked&&wasNearBottom))box.scrollTop=box.scrollHeight;else box.scrollTop=Math.min(oldTop,Math.max(0,box.scrollHeight-box.clientHeight))}}catch(e){$('logs').textContent='Không tải được log: '+e.message;$('logState').textContent='Lỗi tải log'}}
 function fmtNumber(value,suffix='%'){return Number.isFinite(Number(value))?Math.round(Number(value))+suffix:'-'}
-function runLabel(type){return({functional:'Functional Smoke',api_soak:'API Soak',browser_visual:'Browser Visual',behavioral:'Behavioral Campaign',factory_simulation:'Factory Lifecycle',realtime_soak:'Mô phỏng nhiều ngày'})[type]||type}
+function runLabel(type){return({functional:'Functional Smoke',api_soak:'API Soak',browser_visual:'Browser Visual',behavioral:'Behavioral Campaign',factory_simulation:'Factory Lifecycle',realtime_soak:'Mô phỏng nhiều ngày',demo:'Demo Center'})[type]||type}
 async function refresh(force=false){if(refreshBusy&&!force)return;refreshBusy=true;try{const j=await requestJson('/api/status');$('agentState').textContent='Agent online';$('agentState').className='pill ok';$('cpu').textContent=fmtNumber(j.system?.cpu);$('ram').textContent=fmtNumber(j.system?.memory_percent);$('running').textContent=(j.runs||[]).filter(x=>x.status==='RUNNING').length;$('errors').textContent=(j.runs||[]).reduce((a,x)=>a+(Number(x.failed)||0),0);const runs=j.runs||[];$('runs').innerHTML=runs.length?runs.map(x=>`<div class="run" data-id="${x.run_id}"><div class="run-main"><div class="run-title">${runLabel(x.test_type)}</div><div class="run-meta"><span>${x.started_at||'-'}</span><span>${x.passed||0} pass</span><span>${x.failed||0} lỗi</span><span>${x.message||''}</span></div></div><div class="run-status"><span class="badge ${x.status}">${x.status}</span>${x.status==='RUNNING'?`<button class="secondary stop" data-stop="${x.run_id}">Dừng</button>`:''}</div></div>`).join(''):'<div class="empty">Chưa có phiên chạy.</div>';document.querySelectorAll('.run').forEach(el=>el.onclick=ev=>{if(!ev.target.dataset.stop)selectRun(el.dataset.id)});document.querySelectorAll('[data-stop]').forEach(el=>el.onclick=ev=>{ev.stopPropagation();stopRun(el.dataset.stop)});await loadLogs()}catch(e){$('agentState').textContent='Agent lỗi';$('agentState').className='pill bad';if(force)showToast(e.message,'error')}finally{refreshBusy=false}}
 setInterval(()=>{$('clock').textContent=new Date().toLocaleString('vi-VN');refresh()},2000);$('clock').textContent=new Date().toLocaleString('vi-VN');refresh(true);
 window.addEventListener('unhandledrejection',e=>{showToast(e.reason?.message||String(e.reason),'error')});
@@ -112,33 +113,69 @@ $('relShowLogBtn').onclick=e=>withButton(e.currentTarget,async()=>{
 }).catch(()=>{});
 loadReleaseInfo();
 
-let cleanupPreview=null;
-$('previewCleanup').onclick=e=>withButton(e.currentTarget,async()=>{
-  await post('/api/config',configPayload());
-  const j=await post('/api/cleanup',{preview:true});
-  cleanupPreview=j;
-  const po=j.counts?.production_orders||0, emp=j.counts?.employees||0, st=j.counts?.stations||0;
-  $('cleanupSummary').textContent=`Sẽ xóa ${po} PO QA, ${emp} nhân viên QA và ${st} trạm QA. Chỉ tiền tố QAV65817-/QAV65813- được xử lý.`;
-  $('cleanupBadge').textContent=`${po} PO · ${emp} NV · ${st} trạm`;
-  $('cleanupBadge').className='pill '+((po+emp+st)>0?'bad':'ok');
-  $('cleanupTestData').disabled=(po+emp+st)===0;
-  showToast((po+emp+st)>0?'Đã tải danh sách dữ liệu test':'Không có dữ liệu test để xóa','success');
-}).catch(()=>{});
+// Legacy prefix cleanup disabled in v1.22.11.
 
-$('cleanupTestData').onclick=e=>withButton(e.currentTarget,async()=>{
-  if(!cleanupPreview)throw new Error('Hãy bấm Kiểm tra dữ liệu trước');
-  const po=cleanupPreview.counts?.production_orders||0, emp=cleanupPreview.counts?.employees||0, st=cleanupPreview.counts?.stations||0;
-  const typed=window.prompt(`Sắp xóa ${po} PO QA, ${emp} nhân viên QA và ${st} trạm QA.\nKhông thể hoàn tác.\n\nNhập chính xác: DELETE QA DATA`,'');
-  if(typed===null)return;
-  if(typed.trim().toUpperCase()!=='DELETE QA DATA')throw new Error('Chuỗi xác nhận không đúng. Không xóa dữ liệu.');
-  if(!window.confirm('XÁC NHẬN LẦN CUỐI: xóa toàn bộ dữ liệu QA đã liệt kê?'))return;
-  const j=await post('/api/cleanup',{confirm:'DELETE QA DATA'});
-  const c=j.counts||{};
-  $('cleanupSummary').textContent=`Đã xóa ${c.deleted_production_orders||0} PO, ${c.deleted_employees||0} nhân viên, ${c.deleted_stations||0} trạm. Lỗi/được giữ lại: ${c.failed||0}.`;
-  $('cleanupBadge').textContent=(c.failed||0)?'Xóa một phần':'Đã dọn sạch';
-  $('cleanupBadge').className='pill '+((c.failed||0)?'bad':'ok');
-  $('cleanupTestData').disabled=true;
-  cleanupPreview=null;
-  if(c.failed)throw new Error(`Có ${c.failed} bản ghi không xóa được. Xem phản hồi API/service log.`);
-  showToast('Đã xóa dữ liệu test an toàn','success');
-}).catch(()=>{});
+// Demo Center v1.22.1 — Presenter controls + screenshot review
+let demoRunId=null,demoTimer=null,demoScreens=[],demoReviewIndex=-1,demoReviewMode=false;
+const demoDescriptions={
+  'full-production':'Template → PO → Kiosk → Session → Material Flow → Dashboard → Trace/Audit',
+  'planning-po':'Tổng quan → Template → Production Order → Gantt & Material Flow',
+  'kiosk-realtime':'Quét thẻ → Operation → start/finish → nhập sản lượng → realtime dashboard',
+  'quality-rework':'Nhập sản lượng đạt, lỗi và rework rồi xem tác động lên tiến độ',
+  'trace-audit':'Production Trace → Business Audit → Session Management → System Logs',
+  'feature-tour':'Đi qua toàn bộ các màn hình chính để giới thiệu chức năng MESFlow'
+};
+if($('demoScenario')) $('demoScenario').onchange=()=>{$('demoScenarioDesc').textContent=demoDescriptions[$('demoScenario').value]||''};
+function setDemoControlState(st){const paused=st.status==='PAUSED';$('pauseDemo').disabled=!demoRunId||paused;$('resumeDemo').disabled=!demoRunId||!paused;$('demoLiveHint').textContent=paused?'Demo đang dừng ở checkpoint — có thể trả lời câu hỏi hoặc Review Previous.':'Ảnh được cập nhật tự động từ browser automation';}
+function renderDemoState(st){
+  $('demoCurrentStep').textContent=st.current_title||st.current_step||'Đang chuẩn bị';
+  const rows=st.results||[];$('demoSteps').innerHTML=rows.length?rows.map(x=>`<div class="demo-step-row ${String(x.status||'').toLowerCase()}"><b>${x.status==='PASS'?'✓':x.status==='FAIL'?'✕':'•'}</b><span>${x.title||x.id}</span></div>`).join(''):'<div class="empty">Đang chuẩn bị dữ liệu demo…</div>';
+  const status=st.status||'RUNNING';$('demoStatus').textContent=status;$('demoStatus').className='pill '+(status==='PASSED'?'ok':status==='FAILED'?'bad':'neutral');setDemoControlState(st);
+}
+async function loadDemoScreens(){if(!demoRunId)return;try{const j=await requestJson(`/api/demo/${demoRunId}/screenshots`);demoScreens=j.items||[];$('demoPrev').disabled=demoScreens.length<1;$('demoNextShot').disabled=demoScreens.length<1;if(!demoReviewMode)demoReviewIndex=demoScreens.length-1;}catch(e){}}
+function showDemoScreenshot(index){if(!demoScreens.length)return;demoReviewIndex=Math.max(0,Math.min(index,demoScreens.length-1));demoReviewMode=true;const item=demoScreens[demoReviewIndex],img=$('demoLiveImage');img.src=`/api/demo/${demoRunId}/screenshots/${encodeURIComponent(item.name)}?t=${Date.now()}`;img.hidden=false;$('demoLiveEmpty').hidden=true;$('demoViewLabel').textContent='REVIEW MODE';$('demoReviewLabel').textContent=`${demoReviewIndex+1}/${demoScreens.length} · ${item.label}`;$('demoReturnLive').disabled=false;$('demoPrev').disabled=demoReviewIndex<=0;$('demoNextShot').disabled=demoReviewIndex>=demoScreens.length-1;}
+function returnDemoLive(){demoReviewMode=false;$('demoViewLabel').textContent='LIVE VIEW';$('demoReviewLabel').textContent='';$('demoReturnLive').disabled=true;$('demoPrev').disabled=demoScreens.length<1;$('demoNextShot').disabled=demoScreens.length<1;}
+async function pollDemo(){
+  if(!demoRunId)return;
+  try{const j=await requestJson(`/api/demo/${demoRunId}/state`);renderDemoState(j.state||{});await loadDemoScreens();if(!demoReviewMode){const img=$('demoLiveImage');img.src=`/api/demo/${demoRunId}/live.png?t=${Date.now()}`;img.onload=()=>{img.hidden=false;$('demoLiveEmpty').hidden=true}};
+    const run=await requestJson(`/api/runs/${demoRunId}`);const st=run.run?.status||'';if(st&&st!=='RUNNING'){clearInterval(demoTimer);demoTimer=null;$('runDemo').disabled=false;$('pauseDemo').disabled=true;$('resumeDemo').disabled=true;$('stopDemo').disabled=true;$('demoStatus').textContent=st;$('demoStatus').className='pill '+(st==='PASSED'?'ok':st==='FAILED'?'bad':'neutral');await refresh(true)}}catch(e){}
+}
+if($('runDemo')) $('runDemo').onclick=()=>withButton($('runDemo'),async()=>{await post('/api/config',configPayload());const j=await post('/api/start',{test_type:'demo',scenario:$('demoScenario').value,pace:+$('demoPace').value,mode:$('demoMode').value});demoRunId=j.run.run_id;demoScreens=[];demoReviewMode=false;selectedRun=demoRunId;$('selectedRun').textContent=`Demo · ${demoRunId}`;$('pauseDemo').disabled=false;$('resumeDemo').disabled=true;$('stopDemo').disabled=false;$('demoStatus').textContent='RUNNING';$('demoCurrentStep').textContent='Khởi động Chromium';$('demoSteps').innerHTML='<div class="empty">Đang chuẩn bị dữ liệu demo…</div>';$('demoLiveImage').hidden=true;$('demoLiveEmpty').hidden=false;returnDemoLive();if(demoTimer)clearInterval(demoTimer);demoTimer=setInterval(pollDemo,700);await pollDemo();showToast('Đã bắt đầu Demo Runner','success')}).catch(()=>{});
+if($('pauseDemo')) $('pauseDemo').onclick=async()=>{if(!demoRunId)return;await post(`/api/demo/${demoRunId}/control`,{action:'pause'});$('pauseDemo').disabled=true;showToast('Demo sẽ dừng ở checkpoint an toàn kế tiếp','success')};
+if($('resumeDemo')) $('resumeDemo').onclick=async()=>{if(!demoRunId)return;await post(`/api/demo/${demoRunId}/control`,{action:'resume'});$('resumeDemo').disabled=true;returnDemoLive();showToast('Tiếp tục demo','success')};
+if($('stopDemo')) $('stopDemo').onclick=async()=>{if(!demoRunId)return;await post(`/api/stop/${demoRunId}`,{});$('stopDemo').disabled=true;showToast('Đã gửi lệnh dừng demo','success')};
+if($('demoPrev')) $('demoPrev').onclick=async()=>{await loadDemoScreens();showDemoScreenshot((demoReviewMode?demoReviewIndex:demoScreens.length)-1)};
+if($('demoNextShot')) $('demoNextShot').onclick=()=>showDemoScreenshot(demoReviewIndex+1);
+if($('demoReturnLive')) $('demoReturnLive').onclick=()=>{returnDemoLive();pollDemo()};
+
+// Demo database automation (v1.22.11).
+let demoDbPreview=null;
+function renderDemoDbPreview(j){
+  demoDbPreview=j;
+  const badge=$('demoDbBadge'),summary=$('demoDbSummary'),target=$('demoDbTarget'),rows=$('demoDbChecks'),prepare=$('prepareDemoDb'),reset=$('resetDemoDb');
+  if(!badge)return;
+  if(!j.ok){badge.textContent=j.enabled===false?'Đang khóa':'Bị chặn';badge.className='pill bad';summary.textContent=j.error||'Không thể kiểm tra Demo DB';target.innerHTML='';rows.innerHTML='';prepare.disabled=true;reset.disabled=true;return;}
+  badge.textContent='Sẵn sàng';badge.className='pill ok';
+  summary.innerHTML=`Nguồn <strong>${esc(j.source_database)}</strong> chỉ được READ/CLONE. Baseline <strong>${esc(j.template_database)}</strong> và target <strong>${esc(j.database)}</strong> là disposable.`;
+  target.innerHTML=`<div><span>Source DB</span><strong>${esc(j.source_database)}</strong></div><div><span>Demo Template</span><strong>${esc(j.template_database)}</strong></div><div><span>Demo DB</span><strong>${esc(j.database)}</strong></div><div><span>Safety</span><strong>${esc(j.safety||'-')}</strong></div>`;
+  const checks=(j.template_verification?.checks||j.target_verification?.checks||[]);
+  rows.innerHTML=checks.length?checks.map(x=>`<div class="cleanup-row"><span>${esc(x.name)} ${esc(x.rule||'')}</span><b>${x.ok?'PASS':'FAIL'} · ${x.actual==null?'-':Number(x.actual).toLocaleString('vi-VN')}</b></div>`).join(''):'<div class="empty">Chưa có baseline demo. Bấm “Chuẩn bị Demo DB”.</div>';
+  prepare.disabled=false;reset.disabled=!j.template_exists;
+}
+if($('previewDemoDb')) $('previewDemoDb').onclick=()=>withButton($('previewDemoDb'),async()=>{await post('/api/config',configPayload());const j=await requestJson('/api/database/demo/preview');renderDemoDbPreview(j);showToast('Đã kiểm tra Demo DB','success')}).catch(()=>{});
+if($('prepareDemoDb')) $('prepareDemoDb').onclick=async()=>{
+  if(!demoDbPreview?.ok)return;
+  const code=demoDbPreview.prepare_confirm_text;
+  const typed=prompt(`CHUẨN BỊ DEMO DATABASE\n\nSource: ${demoDbPreview.source_database} (READ ONLY)\nTemplate: ${demoDbPreview.template_database}\nTarget: ${demoDbPreview.database}\n\nQA Center chỉ xóa dữ liệu trên clone disposable.\nNhập chính xác: ${code}`,'');
+  if(typed!==code){showToast('Đã hủy: mã xác nhận không đúng','error');return;}
+  const btn=$('prepareDemoDb');btn.disabled=true;btn.textContent='Đang tạo baseline + verify…';
+  try{await post('/api/config',configPayload());const j=await post('/api/database/demo/prepare',{confirm:typed});showToast(j.message||'Demo DB đã sẵn sàng','success');renderDemoDbPreview(await requestJson('/api/database/demo/preview'))}catch(e){showToast(e.message||String(e),'error')}finally{btn.textContent='Chuẩn bị Demo DB'}
+};
+if($('resetDemoDb')) $('resetDemoDb').onclick=async()=>{
+  if(!demoDbPreview?.ok||!demoDbPreview.template_exists)return;
+  const code=demoDbPreview.reset_confirm_text;
+  const typed=prompt(`RESET DEMO DATABASE\n\nTarget: ${demoDbPreview.database}\nFrom: ${demoDbPreview.template_database}\n\nNhập chính xác: ${code}`,'');
+  if(typed!==code){showToast('Đã hủy: mã xác nhận không đúng','error');return;}
+  const btn=$('resetDemoDb');btn.disabled=true;btn.textContent='Đang reset + verify…';
+  try{const j=await post('/api/database/demo/reset',{confirm:typed});showToast(j.message||'Demo DB đã reset','success');renderDemoDbPreview(await requestJson('/api/database/demo/preview'))}catch(e){showToast(e.message||String(e),'error')}finally{btn.textContent='Reset Demo DB'}
+};

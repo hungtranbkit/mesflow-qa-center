@@ -19,6 +19,7 @@ services:
       MESFLOW_QA_RUNTIME_DIR: /data
       MESFLOW_QA_INTERNAL_ONLY: "1"
       MESFLOW_QA_INTERNAL_URL: http://mesflow-app:8080
+      MESFLOW_QA_DEMO_TARGET_URL: ${MESFLOW_QA_DEMO_TARGET_URL:-http://mesflow-app:8080}
       MESFLOW_QA_PROFILE: ${MESFLOW_QA_PROFILE:-LOCAL}
       MESFLOW_QA_USERNAME: ${MESFLOW_QA_USERNAME:-admin}
       # Allow the dashboard to start before credentials are configured. The
@@ -27,17 +28,38 @@ services:
       MESFLOW_QA_DURATION_MINUTES: ${MESFLOW_QA_DURATION_MINUTES:-30}
       MESFLOW_QA_API_WORKERS: ${MESFLOW_QA_API_WORKERS:-10}
       MESFLOW_QA_AUTO_RESUME: "1"
+      MESFLOW_QA_DATABASE_URL: ${MESFLOW_QA_DATABASE_URL:-}
+      MESFLOW_QA_DB_ADMIN_URL: ${MESFLOW_QA_DB_ADMIN_URL:-}
+      MESFLOW_QA_DB_ALLOW_RESET: ${MESFLOW_QA_DB_ALLOW_RESET:-1}
+      MESFLOW_QA_DB_ALLOWED_NAMES: ${MESFLOW_QA_DB_ALLOWED_NAMES:-mesflow_qa,mesflow_test,mesflow_demo}
+      MESFLOW_QA_DB_ALLOWED_HOSTS: ${MESFLOW_QA_DB_ALLOWED_HOSTS:-mesflow-postgres,postgres,127.0.0.1,localhost}
+      MESFLOW_QA_DEMO_SOURCE_DATABASE: ${MESFLOW_QA_DEMO_SOURCE_DATABASE:-mesflow}
+      MESFLOW_QA_DEMO_DATABASE: ${MESFLOW_QA_DEMO_DATABASE:-mesflow_demo}
+      MESFLOW_QA_DEMO_TEMPLATE_DATABASE: ${MESFLOW_QA_DEMO_TEMPLATE_DATABASE:-mesflow_demo_template}
+      MESFLOW_QA_DB_MIN_EMPLOYEES: ${MESFLOW_QA_DB_MIN_EMPLOYEES:-26}
+      MESFLOW_QA_DB_MIN_WORK_SHIFTS: ${MESFLOW_QA_DB_MIN_WORK_SHIFTS:-2}
+      MESFLOW_QA_DB_MIN_SHIFT_INTERVALS: ${MESFLOW_QA_DB_MIN_SHIFT_INTERVALS:-4}
+      MESFLOW_QA_DB_MIN_TEMPLATES: ${MESFLOW_QA_DB_MIN_TEMPLATES:-1}
+      MESFLOW_QA_DB_MIN_USERS: ${MESFLOW_QA_DB_MIN_USERS:-1}
       MESFLOW_QA_MES_RETRY_SECONDS: "30"
       PLAYWRIGHT_HEADLESS: "true"
       PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "127.0.0.1:8095:8095"
     volumes:
       - ..:/app:ro
       - ../runtime:/data
+      # Docker-outside-of-Docker for the UI Preview Lab -- see compose.yml at
+      # the wrapper root for the full rationale.
+      - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - mesflow-edge
+      - mesflow_network
 
 networks:
   mesflow-edge:
+    external: true
+  mesflow_network:
     external: true
