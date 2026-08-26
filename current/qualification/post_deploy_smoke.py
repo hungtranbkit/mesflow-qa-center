@@ -11,7 +11,6 @@ disposable workflow if safe" from the spec.
 """
 from __future__ import annotations
 
-import json
 import time
 import uuid
 from pathlib import Path
@@ -20,6 +19,7 @@ from typing import Any
 import requests
 
 from .evidence import EvidenceStore
+from .scenario_runner import ScenarioRunner
 from .store import connect, now
 
 
@@ -28,30 +28,11 @@ class PostDeploySmokeRunner:
         self.conn = connect()
         self.evidence = EvidenceStore(evidence_root)
         self.http = requests.Session()
+        self._runner = ScenarioRunner(evidence_root, scenario_version="post-deploy-smoke-v1",
+                                      driver="API", evidence_kind="SMOKE_EVIDENCE")
 
     def _scenario(self, suite_id: str, run_id: str, key: str, fn) -> dict[str, Any]:
-        scenario_id = f"scenario-{uuid.uuid4().hex}"
-        self.conn.execute("""INSERT INTO qa_scenario_runs(id,suite_run_id,scenario_key,scenario_version,driver,
-          status,started_at) VALUES(?,?,?,?,?,'RUNNING',?)""",
-          (scenario_id, suite_id, key, "post-deploy-smoke-v1", "API", now()))
-        self.conn.commit()
-        status, actual, first_failure = "PASSED", {}, ""
-        started = time.time()
-        try:
-            actual = fn() or {}
-        except Exception as exc:  # noqa: BLE001
-            status, first_failure = "FAILED", "assertion"
-            actual = {"error_class": type(exc).__name__, "message": str(exc)}
-        actual["duration_seconds"] = round(time.time() - started, 3)
-        evidence = self.evidence.write_json(run_id, f"{key.replace('.', '-')}.json",
-            {"scenario": key, "status": status, "actual": actual}, kind="SMOKE_EVIDENCE",
-            suite_run_id=suite_id, scenario_run_id=scenario_id)
-        self.conn.execute("UPDATE qa_scenario_runs SET status=?,finished_at=?,first_failing_step=?,actual_json=? WHERE id=?",
-                          (status, now(), first_failure, json.dumps(actual, default=str), scenario_id))
-        self.conn.execute("INSERT INTO qa_attempts(scenario_run_id,attempt_no,status,fingerprint,started_at,finished_at) "
-                          "VALUES(?,1,?,?,?,?)", (scenario_id, status, "", now(), now()))
-        self.conn.commit()
-        return {"key": key, "status": status, "actual": actual, "evidence": evidence}
+        return self._runner.run(suite_id, run_id, key, fn, track_duration=True)
 
     def run(self, run_id: str, target_url: str, *, admin_password: str = "Admin@123456",
             allow_disposable_workflow: bool = True, suite_key: str = "post_deploy_smoke") -> dict[str, Any]:

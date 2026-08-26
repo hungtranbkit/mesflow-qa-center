@@ -21,6 +21,7 @@ import requests
 from .database import DeterministicDatabase
 from .deployment import DeploymentError, _run
 from .evidence import EvidenceStore
+from .scenario_runner import ScenarioRunner
 from .store import connect, now
 
 _DEVNULL = subprocess.DEVNULL
@@ -39,28 +40,11 @@ class RecoveryRunner:
         self.conn = connect()
         self.evidence = EvidenceStore(evidence_root)
         self.evidence_root = evidence_root
+        self._runner = ScenarioRunner(evidence_root, scenario_version="recovery-v1",
+                                      driver="RECOVERY", evidence_kind="RECOVERY_EVIDENCE")
 
     def _scenario(self, suite_id: str, run_id: str, key: str, fn) -> dict[str, Any]:
-        scenario_id = f"scenario-{uuid.uuid4().hex}"
-        self.conn.execute("""INSERT INTO qa_scenario_runs(id,suite_run_id,scenario_key,scenario_version,driver,
-          status,started_at) VALUES(?,?,?,?,?,'RUNNING',?)""",
-          (scenario_id, suite_id, key, "recovery-v1", "RECOVERY", now()))
-        self.conn.commit()
-        status, actual, first_failure = "PASSED", {}, ""
-        try:
-            actual = fn() or {}
-        except Exception as exc:  # noqa: BLE001
-            status, first_failure = "FAILED", "assertion"
-            actual = {"error_class": type(exc).__name__, "message": str(exc)}
-        evidence = self.evidence.write_json(run_id, f"{key.replace('.', '-')}.json",
-            {"scenario": key, "status": status, "actual": actual}, kind="RECOVERY_EVIDENCE",
-            suite_run_id=suite_id, scenario_run_id=scenario_id)
-        self.conn.execute("UPDATE qa_scenario_runs SET status=?,finished_at=?,first_failing_step=?,actual_json=? WHERE id=?",
-                          (status, now(), first_failure, json.dumps(actual, default=str), scenario_id))
-        self.conn.execute("INSERT INTO qa_attempts(scenario_run_id,attempt_no,status,fingerprint,started_at,finished_at) "
-                          "VALUES(?,1,?,?,?,?)", (scenario_id, status, "", now(), now()))
-        self.conn.commit()
-        return {"key": key, "status": status, "actual": actual, "evidence": evidence}
+        return self._runner.run(suite_id, run_id, key, fn)
 
     @staticmethod
     def _wait_ready(app: str, target_url: str, timeout_seconds: int = 120) -> dict[str, Any]:
