@@ -28,6 +28,7 @@ from typing import Any
 
 from .evidence import EvidenceStore
 from .integrity_runner import IntegrityRunner
+from .resource_sampler import ResourceSampler
 from .store import connect, now
 
 try:
@@ -42,6 +43,7 @@ class LoadSoakRunner:
         self.evidence = EvidenceStore(evidence_root)
         self.evidence_root = evidence_root
         self._integrity = IntegrityRunner(evidence_root)
+        self._sampler = ResourceSampler(evidence_root)
 
     def run(self, run_id: str, deployment: dict[str, Any], *, profile: str = "SMALL_FACTORY",
             speed_label: str = "10X", window_seconds: float = 60.0, seed: int | None = None,
@@ -66,15 +68,25 @@ class LoadSoakRunner:
             return self._finish(suite_id, run_id, "FAILED",
                                 {"reason": f"simulation failed to bootstrap: {type(exc).__name__}: {exc}", "seed": seed})
 
+        # Resource Sampler (spec section 7): sampled on the same tick as the
+        # existing status poll below -- one shared sampling service instead
+        # of a second parallel timing loop, persisted by run_id/sandbox_id
+        # so it outlives this suite's own return value.
+        sandbox_id = deployment.get("id", "")
+        resource_samples: list[dict[str, Any]] = []
         deadline = time.time() + window_seconds
         last_snapshot = snapshot
         while time.time() < deadline:
             time.sleep(2)
+            resource_samples.append(self._sampler.sample_once(
+                run_id, sandbox_id, app_container=deployment.get("app_container", ""),
+                db_container=deployment["db_container"], target_url=target_url))
             current = mgr.status()
             if current is None or current["status"] != "RUNNING":
                 last_snapshot = current or last_snapshot
                 break
             last_snapshot = current
+        resource_summary = self._sampler.summarize(resource_samples)
 
         try:
             final_snapshot = mgr.stop("load_soak qualification window elapsed")
@@ -96,7 +108,7 @@ class LoadSoakRunner:
 
         payload = {"seed": seed, "engine_run_id": sim_run_id, "profile": profile, "speed_label": speed_label,
                   "window_seconds": window_seconds, "final_snapshot": final_snapshot, "metrics": metrics,
-                  "invariant_violations": broken,
+                  "invariant_violations": broken, "resource_samples": resource_summary,
                   "replay_hint": f"engine.simulation.run_manager.RunManager().start(base_url=<same-artifact-deployment>, "
                                  f"admin_password='Admin@123456', profile={profile!r}, duration_label='8_HOURS', "
                                  f"speed_label={speed_label!r}, seed={seed}) reproduces the exact same actor schedule"}
