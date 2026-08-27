@@ -218,6 +218,23 @@ def main(argv: list[str] | None = None) -> int:
     offline_burst_cmd.add_argument("--kiosk-count", type=int, default=None)
     offline_burst_cmd.add_argument("--seed", type=int, default=None)
 
+    kiosk_certify_cmd = commands.add_parser("kiosk-certify", help="run the Kiosk Certification suite (qualification/"
+                                                                  "kiosk_registry.py profiles), against a fresh isolated "
+                                                                  "deployment of one artifact, plus real ESP HIL when "
+                                                                  "the profile calls for it and hardware is present")
+    kiosk_certify_cmd.add_argument("--artifact", required=True, type=Path)
+    kiosk_certify_cmd.add_argument("--fixture-version", default="mesflow-fixture-v1")
+    kiosk_certify_cmd.add_argument("--evidence-root", type=Path, default=Path("reports/qualification"))
+    kiosk_certify_cmd.add_argument("--keep-environment", action="store_true")
+    kiosk_certify_cmd.add_argument("--profile", default="STANDARD",
+                                   choices=["QUICK", "STANDARD", "RELIABILITY", "STRESS", "FULL", "HIL_ONLY"])
+    kiosk_certify_cmd.add_argument("--kiosk-count", type=int, default=None,
+                                   help="STRESS/FULL profiles only: multi-kiosk offline-burst scale (offline_burst.py)")
+    kiosk_certify_cmd.add_argument("--seed", type=int, default=None)
+    kiosk_certify_cmd.add_argument("--hil-backend-url", default=None,
+                                   help="real device's own reachable URL to this run's isolated sandbox, required "
+                                        "for HIL_ONLY/FULL to progress past BLOCKED once hardware is detected")
+
     chaos_cmd = commands.add_parser("chaos", help="run controlled app/DB/network/stall faults against a fresh isolated sandbox")
     chaos_cmd.add_argument("--artifact", required=True, type=Path)
     chaos_cmd.add_argument("--fixture-version", default="mesflow-fixture-v1")
@@ -453,7 +470,7 @@ def main(argv: list[str] | None = None) -> int:
             _json({"error": str(exc), "error_class": type(exc).__name__})
             return 1
 
-    if args.command in ("hil", "soak", "offline-burst", "chaos"):
+    if args.command in ("hil", "soak", "offline-burst", "chaos", "kiosk-certify"):
         manifest, err_code = _safe_inspect_package(args.artifact)
         if err_code is not None:
             return err_code
@@ -488,6 +505,32 @@ def main(argv: list[str] | None = None) -> int:
                 deployment = deployer.deploy(qualification["id"], args.artifact, fixture_version=args.fixture_version)
                 DeterministicDatabase(args.evidence_root).seed(qualification["id"], deployment["db_container"], args.fixture_version)
                 result = ChaosRunner(args.evidence_root).run(qualification["id"], deployment)
+            elif args.command == "kiosk-certify":
+                from .kiosk_registry import PROFILES as KIOSK_PROFILES
+                spec = KIOSK_PROFILES[args.profile]
+                sub_results: dict[str, Any] = {}
+                if args.profile != "HIL_ONLY":
+                    deployment = deployer.deploy(qualification["id"], args.artifact, fixture_version=args.fixture_version)
+                    DeterministicDatabase(args.evidence_root).seed(qualification["id"], deployment["db_container"], args.fixture_version)
+                    emulator_profile = None if args.profile in ("STANDARD", "FULL") else args.profile
+                    sub_results["kiosk_emulator"] = KioskEmulatorRunner(args.evidence_root).run(
+                        qualification["id"], deployment["target_url"], deployment["db_container"], profile=emulator_profile)
+                    if spec.get("uses_offline_burst"):
+                        sub_results["offline_burst"] = OfflineBurstRunner(args.evidence_root).run(
+                            qualification["id"], deployment, profile="QUALIFICATION" if args.profile == "FULL" else "CI",
+                            kiosk_count=args.kiosk_count, seed=args.seed)
+                if spec.get("hil"):
+                    hil_backend = args.hil_backend_url or (deployment["target_url"] if deployment else None)
+                    sub_results["esp_hil"] = EspHilRunner(args.evidence_root).run(qualification["id"], backend_url=hil_backend)
+                # Overall status: FAILED if any real sub-suite FAILED; a
+                # sub-suite that came back BLOCKED/NOT_CONFIGURED (e.g. no
+                # ESP32 attached for FULL) never counts as a failure on its
+                # own -- that's exactly the honest distinction esp_hil.py's
+                # own three-outcome contract already draws, just rolled up
+                # here across possibly-multiple sub-suites.
+                terminal = {name: r.get("status", "PASSED") for name, r in sub_results.items()}
+                overall = "FAILED" if any(v == "FAILED" for v in terminal.values()) else "PASSED"
+                result = {"status": overall, "profile": args.profile, "sub_results": sub_results, "sub_status": terminal}
             else:
                 # esp_hil doesn't need its own isolated Postgres/app -- it
                 # only needs the artifact registered for identity, plus

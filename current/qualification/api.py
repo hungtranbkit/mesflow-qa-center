@@ -507,3 +507,84 @@ def policy_evaluate_tier():
     except ValueError as exc:
         return jsonify(ok=False, error="UNKNOWN_TIER", message=str(exc)), 400
     return jsonify(ok=True, decision=decision)
+
+
+# ---- Kiosk Certification (spec: ESP Kiosk / Kiosk Certification phase) ----
+
+@bp.get("/kiosk/testcases")
+def kiosk_testcases():
+    from .kiosk_registry import REGISTRY_VERSION, list_registry
+    return jsonify(ok=True, registry_version=REGISTRY_VERSION, items=list_registry())
+
+
+@bp.get("/kiosk/profiles")
+def kiosk_profiles():
+    from .kiosk_registry import list_profiles
+    return jsonify(ok=True, profiles=list_profiles())
+
+
+@bp.post("/kiosk/run")
+def kiosk_run():
+    """Launches a real `kiosk-certify` job for an already-registered
+    artifact (Run Quick/Full/Network/Offline/Stress/HIL Test -- spec
+    section 1). Reuses the exact same async job launcher every other
+    web-triggered run already uses (_start_job below), never runs a
+    qualification job inline in this request."""
+    from .kiosk_registry import PROFILES
+    body = request.get_json(silent=True) or {}
+    artifact_sha256 = str(body.get("artifact_sha256") or "").strip()
+    profile = str(body.get("profile") or "").strip().upper()
+    if profile not in PROFILES:
+        return jsonify(ok=False, error="UNKNOWN_PROFILE", message=f"expected one of {sorted(PROFILES)}"), 400
+    row = connect().execute("SELECT source_path FROM qa_artifacts WHERE sha256=?", (artifact_sha256,)).fetchone()
+    if not row:
+        return jsonify(ok=False, error="ARTIFACT_NOT_FOUND"), 404
+    argv = ["python3", "-m", "qualification.cli", "kiosk-certify", "--artifact", row["source_path"], "--profile", profile]
+    job = _start_job(argv)
+    return jsonify(ok=True, job=job, profile=profile), 202
+
+
+@bp.get("/kiosk/certification/<sha256>")
+def kiosk_certification_route(sha256: str):
+    from .kiosk_registry import kiosk_certification
+    return jsonify(ok=True, certification=kiosk_certification(sha256))
+
+
+@bp.get("/runs/<run_id>/kiosk")
+def run_kiosk_results(run_id: str):
+    """Section 26/27: this run's kiosk testcases grouped by category, with
+    enough detail per failure to render the section-27 failure drawer
+    without a second request. Built entirely from qa_scenario_runs/
+    qa_suite_runs -- no second store."""
+    from .kiosk_registry import CATEGORY_LABEL_VI, REGISTRY
+
+    by_scenario_key = {tc.scenario_key: tc for tc in REGISTRY.values()}
+    conn = connect()
+    rows = [dict(r) for r in conn.execute(
+        """SELECT sr.id,sr.scenario_key,sr.status,sr.started_at,sr.finished_at,sr.first_failing_step,
+                  s.suite_key,s.status suite_status
+           FROM qa_scenario_runs sr JOIN qa_suite_runs s ON s.id=sr.suite_run_id
+           WHERE s.qualification_run_id=? AND s.suite_key IN ('kiosk_emulator','esp_hil')
+           ORDER BY sr.started_at""", (run_id,)).fetchall()]
+    categories: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        tc = by_scenario_key.get(row["scenario_key"])
+        category = tc.category if tc else ("PHYSICAL_HIL" if row["scenario_key"].startswith("esp.hil_ota.") else "OTHER")
+        bucket = categories.setdefault(category, {"category": category,
+                                                   "category_label": CATEGORY_LABEL_VI.get(category, category),
+                                                   "passed": 0, "failed": 0, "blocked": 0, "total": 0, "items": []})
+        bucket["total"] += 1
+        status = row["status"]
+        if status == "PASSED":
+            bucket["passed"] += 1
+        elif status in ("BLOCKED", "NOT_CONFIGURED"):
+            bucket["blocked"] += 1
+        else:
+            bucket["failed"] += 1
+        bucket["items"].append({
+            "scenario_run_id": row["id"], "testcase_id": tc.testcase_id if tc else None,
+            "name": tc.name if tc else row["scenario_key"], "scenario_key": row["scenario_key"],
+            "status": status, "started_at": row["started_at"], "finished_at": row["finished_at"],
+            "first_failing_step": row["first_failing_step"],
+        })
+    return jsonify(ok=True, run_id=run_id, categories=list(categories.values()))
