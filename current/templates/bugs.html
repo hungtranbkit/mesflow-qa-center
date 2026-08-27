@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MESFlow QA Center · Bug Center</title>
+  <link rel="stylesheet" href="/static/app.css?v={{ app_version }}">
+  <link rel="stylesheet" href="/static/ops_pages.css?v={{ app_version }}">
+</head>
+<body>
+<nav class="topnav">
+  <a href="/">Dashboard</a>
+  <a href="/preview-lab">UI Preview Lab</a>
+  <a href="/regression">Regression Protection</a>
+  <a href="/bugs" class="active">Bugs</a>
+  <a href="/demo">Demo Center</a>
+  <a href="/simulations">Factory Soak</a>
+</nav>
+<div id="toast" class="toast" hidden></div>
+<header class="ops-topbar">
+  <div><div class="eyebrow">MESFLOW TEST AUTOMATION</div><h1>Bug Center</h1><p>Một bug chỉ RESOLVED sau khi verify PASS. Nếu bug đã RESOLVED tái xuất hiện, nó tự động thành REGRESSION.</p></div>
+  <a class="ghost-link" href="/">← QA Center</a>
+</header>
+<main class="ops-main">
+  <div id="summaryPills" class="summary-pills"></div>
+
+  <div class="card">
+    <div class="filter-row">
+      <label><span>Feature</span><input id="fFeature" placeholder="ví dụ: session.finish"></label>
+      <label><span>Severity</span><select id="fSeverity"><option value="">(tất cả)</option><option>LOW</option><option>MEDIUM</option><option>HIGH</option><option>CRITICAL</option></select></label>
+      <label><span>Trạng thái</span><select id="fStatus"><option value="">(tất cả)</option><option>OPEN</option><option>FIXING</option><option>READY_FOR_VERIFY</option><option>RESOLVED</option><option>REGRESSION</option><option>IGNORED</option></select></label>
+      <label><span>Run ID</span><input id="fRun" placeholder="cov-… / run id"></label>
+      <button id="applyFilter">Lọc</button>
+      <button id="refreshBugs" class="secondary">Làm mới</button>
+    </div>
+  </div>
+
+  <div id="bugList" style="margin-top:14px"><div class="empty">Đang tải…</div></div>
+</main>
+<script src="/static/bugs.js?v={{ app_version }}"></script>
+</body>
+</html>

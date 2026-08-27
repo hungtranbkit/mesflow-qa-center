@@ -6,7 +6,7 @@ def test_agent_internal_only_contract():
     t=(ROOT/"agent.py").read_text(encoding="utf-8")
     ast.parse(t)
     assert 'QA_INTERNAL_URL = os.environ.get("MESFLOW_QA_INTERNAL_URL", "http://mesflow-app:8080")' in t
-    assert 'base["base_url"] = QA_INTERNAL_URL' in t
+    assert 'base["internal_base_url"] = QA_INTERNAL_URL' in t
     assert '"--fallback-base-url", ""' in t
 
 def test_ui_has_no_public_runtime_choice():

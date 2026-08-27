@@ -2,6 +2,12 @@
 runtime/
 docker/runtime/
 artifacts/
+# qualification/cli.py's default --evidence-root (reports/qualification) is
+# a relative path -- a local run without an explicit --evidence-root would
+# otherwise write real qualification evidence (server logs, screenshots,
+# scenario payloads) straight into the repo with nothing to stop it being
+# committed by accident.
+reports/
 *.tar
 *.tar.zst
 *.log

@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.0.0",
+  "suites": [
+    {
+      "key": "build_integrity",
+      "layer": "static",
+      "profiles": ["quick", "full"],
+      "command": ["bash", "scripts/check-version-contract.sh"],
+      "required": true,
+      "timeout_seconds": 120
+    },
+    {
+      "key": "critical_unit",
+      "layer": "unit",
+      "profiles": ["quick", "full"],
+      "command": ["python3", "-m", "pytest", "-q", "tests/test_behavioral_engine.py", "tests/test_simulation_phase_a.py"],
+      "required": true,
+      "timeout_seconds": 300
+    },
+    {
+      "key": "qa_center_self_test",
+      "layer": "integration",
+      "profiles": ["full"],
+      "command": ["python3", "-m", "pytest", "-q"],
+      "required": true,
+      "timeout_seconds": 1800
+    }
+  ]
+}

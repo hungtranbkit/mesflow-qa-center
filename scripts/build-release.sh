@@ -35,22 +35,53 @@ if [[ -f "$dist/release.json" ]]; then
 fi
 mkdir -p "$dist"
 
-# --- required tests ---------------------------------------------------
-# Real evidence, recorded into the release (TEST_REPORT.txt / BUILD_REPORT.md
-# / release.json), but not a hard build gate: this suite's test_v11NN_*.py
-# files are, by an established pre-existing convention in this repo, each
-# permanently pinned to their own historical checkpoint version (identical
-# situation to MESFlow's own equivalent test debt) and fail forever once the
-# version moves past them -- that is expected, not a regression from this
-# build. Nothing is hidden: the full pass/fail counts are always recorded.
-test_log="$dist/.test-output.tmp"
-test_status="PASS"
-if python3 -c "import pytest" >/dev/null 2>&1; then
-  ( cd "$SRC" && python3 -m pytest tests/test_v120*.py -q ) > "$test_log" 2>&1 || test_status="FAILED (see TEST_REPORT.txt)"
+# Resolve/build the dependency image before running tests. Tests execute in
+# this same dependency environment with the full wrapper/current source tree
+# bind-mounted, so host Python packages can neither create false failures nor
+# silently skip the release gate.
+base_recipe="$SRC/docker/Dockerfile.base"
+[[ -f "$base_recipe" ]] || die "QA_BASE_DOCKERFILE_NOT_FOUND: $base_recipe"
+base_hash="$(cat "$base_recipe" "$SRC/requirements.txt" | sha256sum | awk '{print $1}')"
+base_image="${MESFLOW_QA_BASE_IMAGE_REPOSITORY:-mesflow-qa-base}:py312-${base_hash:0:16}"
+if docker image inspect "$base_image" >/dev/null 2>&1; then
+  echo "QA BASE CACHE HIT: $base_image"
 else
-  echo "pytest not available in this build environment" > "$test_log"
-  test_status="SKIPPED (pytest unavailable)"
+  echo "QA BASE CACHE MISS: building $base_image (first build or dependencies changed)"
+  docker build -f current/docker/Dockerfile.base -t "$base_image" current
 fi
+
+# --- required tests ---------------------------------------------------
+# A release may never be frozen when its source suite fails. Historical tests
+# must express historical fixtures explicitly; stale current-version
+# assertions are test debt to fix, never a reason to publish a FAILED build.
+test_log="$dist/.test-output.tmp"
+test_source="$ROOT"
+# When this script runs inside Deploy Agent, its Docker CLI talks to the
+# host daemon through /var/run/docker.sock. A bind source must therefore be
+# a HOST path, not the container-only /workspace/... path. Resolve the
+# source of the enclosing bind dynamically from this container's mounts;
+# direct host execution keeps using $ROOT unchanged.
+if [[ -f /.dockerenv ]]; then
+  container_id="$(hostname)"
+  while IFS=$'\t' read -r destination source; do
+    [[ -n "$destination" && -n "$source" ]] || continue
+    case "$ROOT/" in
+      "$destination"/*)
+        relative="${ROOT#"$destination"}"
+        test_source="${source}${relative}"
+        break
+        ;;
+    esac
+  done < <(docker inspect "$container_id" --format '{{range .Mounts}}{{printf "%s\t%s\n" .Destination .Source}}{{end}}')
+  [[ "$test_source" != "$ROOT" ]] || die "DOCKER_HOST_SOURCE_UNRESOLVED: cannot map container source $ROOT to a host bind path"
+fi
+echo "QA TEST SOURCE: $test_source"
+if ! docker run --rm -v "$test_source:/source:ro" -w /tmp "$base_image" \
+    sh -lc 'cp -a /source /tmp/workspace && cd /tmp/workspace/current && python3 -m pip install --quiet pytest && python3 -m pytest -q' > "$test_log" 2>&1; then
+  cp "$test_log" "$dist/TEST_REPORT.txt"
+  die "TESTS_FAILED: QA Center source suite failed; see $dist/TEST_REPORT.txt. No image/package was frozen."
+fi
+test_status="PASS"
 test_summary="$(tail -3 "$test_log" | tr '\n' ' ' | sed 's/  */ /g')"
 
 # --- build --------------------------------------------------------------
@@ -69,10 +100,14 @@ test_summary="$(tail -3 "$test_log" | tr '\n' ' ' | sed 's/  */ /g')"
 # image-id determinism; the tag-contamination check right below only cares
 # that an existing `image` tag isn't silently repointed at different bytes,
 # which holds regardless of builder.
+# Build/reuse a fingerprinted heavy QA base image. This turns normal QA
+# releases into a thin source-copy build while preserving automatic
+# invalidation whenever browser/system/Python dependencies change.
 build_tag="${image}__building_$$"
 cleanup_build_tag(){ docker rmi "$build_tag" >/dev/null 2>&1 || true; }
 trap cleanup_build_tag EXIT
-docker build -f current/docker/Dockerfile -t "$build_tag" current
+echo "QA APP BUILD: thin source layer on $base_image"
+docker build --build-arg QA_BASE_IMAGE="$base_image" --build-arg QA_RUNTIME_VERSION="$version" -f current/docker/Dockerfile -t "$build_tag" current
 new_id="$(docker image inspect "$build_tag" --format '{{.Id}}')"
 [[ "$new_id" == sha256:* ]] || die "IMAGE_ID_UNAVAILABLE"
 if docker image inspect "$image" >/dev/null 2>&1; then
@@ -207,7 +242,7 @@ with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as z:
             z.write(path, path.relative_to(root).as_posix())
 PY
 fi
-sha256sum "$package" > "$package.sha256"
+(cd "$dist" && sha256sum "$(basename "$package")" > "$(basename "$package").sha256")
 
 # Fill in the artifact's own SHA256 on the $dist copy of manifest.json only
 # (the copy inside the immutable ZIP deliberately stays without it -- see

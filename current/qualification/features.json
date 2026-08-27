@@ -1,0 +1,25 @@
+{
+  "schema_version": "1.0.0",
+  "features": [
+    {"key":"auth.sessions_roles","name":"Authentication, sessions and roles","critical":true,"required_layers":["unit","api","integration"],"required_drivers":["API","BROWSER"]},
+    {"key":"dashboard.production_overview","name":"Production overview dashboard","critical":true,"required_layers":["api","browser"],"required_drivers":["API","BROWSER"]},
+    {"key":"production_orders.lifecycle","name":"Production Order lifecycle","critical":true,"required_layers":["api","integration","workflow","browser"],"required_drivers":["API","BROWSER"]},
+    {"key":"templates.parts.operations","name":"Templates, Parts and Operations","critical":true,"required_layers":["api","integration","browser"],"required_drivers":["API","BROWSER"]},
+    {"key":"scheduling.dependencies_wip","name":"Scheduling, dependencies and WIP","critical":true,"required_layers":["unit","integration","workflow"],"required_drivers":["API"]},
+    {"key":"employees.stations_equipment","name":"Employees, stations and equipment","critical":false,"required_layers":["api","browser"],"required_drivers":["API","BROWSER"]},
+    {"key":"calendar.shifts","name":"Working calendar and shifts","critical":true,"required_layers":["unit","integration","workflow","browser"],"required_drivers":["API","BROWSER"]},
+    {"key":"sessions.lifecycle","name":"Work-session lifecycle","critical":true,"required_layers":["unit","api","integration","workflow"],"required_drivers":["API","KIOSK_EMULATOR"]},
+    {"key":"sessions.group_supervisor","name":"Group sessions and supervisor correction","critical":true,"required_layers":["api","integration","workflow"],"required_drivers":["API","KIOSK_EMULATOR"]},
+    {"key":"quality.quantities_rework","name":"Quantity, defect and repair/rework","critical":true,"required_layers":["unit","integration","workflow","browser"],"required_drivers":["API","BROWSER","KIOSK_EMULATOR"]},
+    {"key":"exceptions.reconciliation","name":"Exception detection and reconciliation","critical":true,"required_layers":["integration","workflow","recovery"],"required_drivers":["API"]},
+    {"key":"trace.audit","name":"Production trace and business audit","critical":true,"required_layers":["api","integration","browser"],"required_drivers":["API","BROWSER"]},
+    {"key":"reports.kpi_productivity","name":"Reports, KPI and productivity","critical":true,"required_layers":["api","integration","browser"],"required_drivers":["API","BROWSER"]},
+    {"key":"kiosk.web_legacy_v2","name":"Web, legacy and v2 kiosk protocols","critical":true,"required_layers":["api","integration","workflow"],"required_drivers":["KIOSK_EMULATOR"]},
+    {"key":"kiosk.offline_recovery","name":"Kiosk offline sync and recovery","critical":true,"required_layers":["integration","workflow","recovery"],"required_drivers":["KIOSK_EMULATOR"]},
+    {"key":"esp.hil_ota","name":"ESP hardware and OTA","critical":false,"required_layers":["hil"],"required_drivers":["ESP_HIL"]},
+    {"key":"health.jobs_notifications","name":"System health, jobs and notifications","critical":true,"required_layers":["api","integration","recovery"],"required_drivers":["API"]},
+    {"key":"imports.exports.qr","name":"Import, export and QR labels","critical":false,"required_layers":["api","integration","browser"],"required_drivers":["API","BROWSER"]},
+    {"key":"database.migrations_backup","name":"Migrations and backup/restore","critical":true,"required_layers":["database","migration","recovery"],"required_drivers":["API"]},
+    {"key":"deployment.version_health","name":"Deployment, version and post-deploy health","critical":true,"required_layers":["static","upgrade","recovery"],"required_drivers":["API"]}
+  ]
+}

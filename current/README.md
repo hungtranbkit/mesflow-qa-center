@@ -1,4 +1,4 @@
-# MESFlow QA Center v1.17.1
+# MESFlow QA Center v1.21.0
 
 QA Center cho MESFlow với realistic multi-day soak test.
 
@@ -53,3 +53,13 @@ Self-test dùng chính `.venv` của QA Center nên kiểm tra đúng Flask/requ
 Ma trận nghiệp vụ đầy đủ: `TEST_CASES_V1180_FULL_COVERAGE.md`.
 
 Các nhóm chính: UI trắng/static, config lỗi, start/stop/log, kiosk heartbeat, cleanup an toàn, database legacy, Windows lifecycle, session cuối ca/quên chốt, repairable/rework, negative quantity, input mismatch, idempotency, CLOSED↔OPEN aggregate, reconcile OP/PO, dependency cycle, quyền API, Force Delete, scheduling/priority/WIP, shift qua ngày và timezone.
+
+
+## v1.21.0 Demo Center
+
+- Chọn scenario demo trực tiếp trên QA Center.
+- Playwright tự thao tác MESFlow theo UI thật; API chỉ dùng setup/assertion.
+- Live View cập nhật screenshot từ Chromium chạy trên QA host.
+- Có Full Production, Planning/PO, Kiosk Realtime, Quality/Rework, Trace/Audit và Feature Tour.
+- Dữ liệu demo được tạo với prefix `CODEX-DEMO-`.
+- Có progress từng bước và nút Stop.
