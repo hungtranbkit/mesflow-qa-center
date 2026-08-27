@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 APP_NAME="mesflow-qa-center"
-APP_VERSION="1.30.0"
+APP_VERSION="1.31.0"
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUN_USER="${MESFLOW_QA_WORKSPACE_USER:-${SUDO_USER:-$(id -un)}}"
 
