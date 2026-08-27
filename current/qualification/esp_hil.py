@@ -197,7 +197,18 @@ class EspHilRunner:
 
     def _finish(self, suite_id: str, run_id: str, status: str, payload: dict[str, Any]) -> dict[str, Any]:
         evidence = self.evidence.write_json(run_id, "esp-hil-result.json", payload, kind="ESP_HIL_EVIDENCE", suite_run_id=suite_id)
+        # Spec section 17: the QA Center UI must show WHY esp_hil is
+        # NOT_CONFIGURED/BLOCKED/FAILED (device missing/serial unavailable/
+        # network unreachable/firmware mismatch/test failure), not just a
+        # bare status word. The full payload already goes to the evidence
+        # file above; also keep the short human-readable "reason" (present
+        # on every non-PASSED outcome) directly on the suite_runs row itself
+        # so the suite ledger can display it without a second evidence-file
+        # read for every row.
+        summary = {"evidence_id": evidence["id"]}
+        if payload.get("reason"):
+            summary["reason"] = payload["reason"]
         self.conn.execute("UPDATE qa_suite_runs SET status=?,finished_at=?,summary_json=? WHERE id=?",
-                          (status, now(), json.dumps({"evidence_id": evidence["id"]}), suite_id))
+                          (status, now(), json.dumps(summary), suite_id))
         self.conn.commit()
         return {"suite_id": suite_id, "status": status, "evidence": evidence, **payload}

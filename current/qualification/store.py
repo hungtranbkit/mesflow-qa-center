@@ -139,6 +139,18 @@ _MIGRATIONS = [
     "ALTER TABLE qa_deployments ADD COLUMN retained_at TEXT",
     "ALTER TABLE qa_deployments ADD COLUMN destroyed_at TEXT",
     "ALTER TABLE qa_qualification_runs ADD COLUMN run_kind TEXT NOT NULL DEFAULT 'RELEASE_QUALIFICATION'",
+    # Re-run/Clone (spec section 7/8): the exact argv that launched this
+    # run, so a web-triggered re-run/clone can replay it (optionally with
+    # overrides) instead of QA Center inventing a second way to construct
+    # a qualification.cli invocation. cloned_from_run_id is traceability
+    # only (not schema-enforced) -- a clone is always a brand new run row.
+    "ALTER TABLE qa_qualification_runs ADD COLUMN launch_command_json TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE qa_qualification_runs ADD COLUMN cloned_from_run_id TEXT",
+    # Live observation (spec section 2/6): one flexible JSON blob rather
+    # than a column explosion -- phase/scenario/actor/action/simulated
+    # time/updated_at, touched by whichever runner has real progress to
+    # report. Never invented when a runner has nothing real to say.
+    "ALTER TABLE qa_qualification_runs ADD COLUMN progress_json TEXT NOT NULL DEFAULT '{}'",
 ]
 
 

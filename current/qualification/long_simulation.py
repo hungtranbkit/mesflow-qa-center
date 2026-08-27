@@ -14,6 +14,7 @@ from .evidence import EvidenceStore
 from .integrity_runner import IntegrityRunner
 from .resource_sampler import ResourceSampler
 from .scenario_runner import ScenarioRunner
+from .service import QualificationService
 from .store import connect, now
 
 PROFILES: dict[str, dict[str, Any]] = {
@@ -58,11 +59,14 @@ class LongSimulationRunner:
         self.conn.commit()
         manager = RunManager()
         started_wall = time.monotonic()
+        progress = QualificationService()
 
         def execute():
             initial = manager.start(base_url=deployment["target_url"], admin_password="Admin@123456",
                                     profile=spec["factory"], duration_label=spec["duration"],
                                     speed_label=spec["speed"], seed=seed)
+            progress.touch_progress(run_id, phase="long_running_factory_simulation", profile=name,
+                                    simulated_time_seconds=initial.get("sim_now"), wall_elapsed_seconds=0)
             samples = []
             deadline = None if spec["wall_timeout"] is None else started_wall + spec["wall_timeout"]
             if stop_after_wall_seconds is not None:
@@ -81,6 +85,18 @@ class LongSimulationRunner:
                         run_id, deployment.get("id", ""), app_container=deployment["app_container"],
                         db_container=deployment["db_container"], target_url=deployment["target_url"])
                     samples.append((time.monotonic(), metric))
+                    # Live observation (spec section 2/6): real, already-
+                    # computed snapshot fields only -- RunManager has no
+                    # per-actor "current action" text to report (checked;
+                    # it genuinely doesn't track one), so that field is
+                    # simply never set here rather than invented.
+                    if snapshot:
+                        progress.touch_progress(run_id, phase="long_running_factory_simulation", profile=name,
+                                                simulated_time_seconds=snapshot.get("sim_now"),
+                                                wall_elapsed_seconds=round(time.monotonic() - started_wall, 1),
+                                                sessions_started=snapshot.get("metrics", {}).get("sessions_started"),
+                                                sessions_finished=snapshot.get("metrics", {}).get("sessions_finished"),
+                                                employees=snapshot.get("employees"), kiosks=snapshot.get("kiosks"))
                 time.sleep(0.5)
             final = manager.status() or snapshot
             checks = self.integrity.assert_ok(run_id, deployment["db_container"], context="post-long-simulation")

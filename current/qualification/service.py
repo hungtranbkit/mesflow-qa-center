@@ -95,7 +95,8 @@ class QualificationService:
 
     def start_run(self, *, artifact_id: str, environment_id: str, profile: str,
                   dataset_version: str, scenario_set_version: str,
-                  run_kind: str = "RELEASE_QUALIFICATION") -> dict[str, Any]:
+                  run_kind: str = "RELEASE_QUALIFICATION", launch_argv: list[str] | None = None,
+                  cloned_from_run_id: str | None = None) -> dict[str, Any]:
         if not self.conn.execute("SELECT 1 FROM qa_artifacts WHERE id=?", (artifact_id,)).fetchone():
             raise QualificationError("unknown artifact")
         env = self.conn.execute("SELECT * FROM qa_environments WHERE id=?", (environment_id,)).fetchone()
@@ -112,11 +113,30 @@ class QualificationService:
         run_id = self._id("run")
         self.conn.execute(
             """INSERT INTO qa_qualification_runs(id,artifact_id,environment_id,profile,dataset_version,
-               scenario_set_version,status,started_at,run_kind) VALUES(?,?,?,?,?,?,?,?,?)""",
-            (run_id, artifact_id, environment_id, profile, dataset_version, scenario_set_version, "RUNNING", now(), run_kind),
+               scenario_set_version,status,started_at,run_kind,launch_command_json,cloned_from_run_id)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (run_id, artifact_id, environment_id, profile, dataset_version, scenario_set_version, "RUNNING", now(),
+             run_kind, json.dumps(launch_argv or []), cloned_from_run_id),
         )
         self.conn.commit()
         return dict(self.conn.execute("SELECT * FROM qa_qualification_runs WHERE id=?", (run_id,)).fetchone())
+
+    def touch_progress(self, run_id: str, **fields: Any) -> dict[str, Any]:
+        """Live observation (spec section 2/6): merge real, runner-reported
+        progress fields (phase/scenario_key/actor/action/simulated_time_seconds/
+        anything else a specific runner genuinely has) into one JSON blob,
+        never inventing a field a caller didn't actually pass. Safe to call
+        often -- it's a single small UPDATE, not a new high-frequency store."""
+        row = self.conn.execute("SELECT progress_json FROM qa_qualification_runs WHERE id=?", (run_id,)).fetchone()
+        if not row:
+            raise QualificationError(f"unknown qualification run: {run_id}")
+        progress = json.loads(row["progress_json"] or "{}")
+        progress.update(fields)
+        progress["updated_at"] = now()
+        self.conn.execute("UPDATE qa_qualification_runs SET progress_json=? WHERE id=?",
+                          (json.dumps(progress, default=str), run_id))
+        self.conn.commit()
+        return progress
 
     def finish_run(self, run_id: str) -> dict[str, Any]:
         suites = [dict(r) for r in self.conn.execute(
@@ -148,6 +168,21 @@ class QualificationService:
         self.conn.commit()
         return self.run_manifest(run_id)
 
+    def mark_cancelled(self, run_id: str) -> dict[str, Any]:
+        """Spec section 13/14: an operator-cancelled long-simulation job (web
+        job launcher's /jobs/<id>/cancel -> SIGTERM) is NOT "completed" --
+        finish_run()'s PASSED/FAILED/BLOCKED/FLAKY derivation from suite rows
+        would be dishonest here (the suite never got to run to a real
+        conclusion). CANCELLED is a distinct, honest terminal status so a
+        QA Center restart (or the Run History list) never mistakes a
+        deliberately-stopped run for a completed qualification result."""
+        self.conn.execute(
+            "UPDATE qa_qualification_runs SET status='CANCELLED',finished_at=? WHERE id=? AND status='RUNNING'",
+            (now(), run_id),
+        )
+        self.conn.commit()
+        return self.run_manifest(run_id)
+
     def run_manifest(self, run_id: str) -> dict[str, Any]:
         row = self.conn.execute(
             """SELECT q.*,a.filename artifact_filename,a.sha256 artifact_sha256,a.size_bytes artifact_size_bytes,
@@ -162,6 +197,8 @@ class QualificationService:
         result = dict(row)
         for key in ("failed_fingerprints", "summary_json"):
             result[key.removesuffix("_json")] = json.loads(result.pop(key) or ("[]" if key == "failed_fingerprints" else "{}"))
+        result["launch_command"] = json.loads(result.pop("launch_command_json", None) or "[]")
+        result["progress"] = json.loads(result.pop("progress_json", None) or "{}")
         result["suites"] = [dict(r) for r in self.conn.execute(
             "SELECT * FROM qa_suite_runs WHERE qualification_run_id=? ORDER BY started_at", (run_id,)).fetchall()]
         result["evidence"] = [dict(r) for r in self.conn.execute(

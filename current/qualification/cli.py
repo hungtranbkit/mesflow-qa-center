@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 import uuid
 from pathlib import Path
 
@@ -269,7 +270,30 @@ def main(argv: list[str] | None = None) -> int:
     certify.add_argument("--run-id", action="append", required=True)
     certify.add_argument("--hil-configured", action="store_true")
     args = parser.parse_args(argv)
+    # Cancel path (spec section 13/14): the web job launcher's /jobs/<id>/cancel
+    # sends SIGTERM to this exact process. Left unhandled, SIGTERM kills the
+    # interpreter immediately -- the try/finally blocks below that destroy the
+    # sandbox and close out qa_suite_runs/qa_qualification_runs rows would
+    # never execute, leaking exactly the orphaned containers/networks already
+    # documented as a real gap (SandboxManager.reap_orphans() only reaps DB
+    # rows, not raw docker objects from a process that never reaches its own
+    # cleanup). Converting SIGTERM into a normal SystemExit lets every
+    # existing finally: block run its real cleanup on cancel, without adding
+    # any new run/evidence/sandbox system.
+    import signal as _signal
+
+    def _handle_sigterm(signum, frame):
+        raise SystemExit(143)
+
+    _signal.signal(_signal.SIGTERM, _handle_sigterm)
     service = QualificationService()
+    # Re-run/Clone (spec section 7/8): the exact replayable command line
+    # for whichever subcommand this invocation is, persisted on the run row
+    # itself via start_run(launch_argv=...) below -- a web-triggered
+    # re-run/clone just reads this back and launches it again (optionally
+    # patching a flag) instead of QA Center inventing a second way to
+    # reconstruct a qualification.cli call per run_kind.
+    launch_argv = ["python3", "-m", "qualification.cli", *(argv if argv is not None else sys.argv[1:])]
 
     if args.command == "manifest":
         _json(service.run_manifest(args.run_id))
@@ -295,7 +319,7 @@ def main(argv: list[str] | None = None) -> int:
                                                   identity=f"QA:migration:{artifact['sha256']}:{uuid.uuid4().hex[:8]}")
         qualification = service.start_run(artifact_id=artifact["id"], environment_id=environment["id"], profile="migration",
                                           dataset_version=args.fixture_version, scenario_set_version="migration",
-                                          run_kind="MIGRATION")
+                                          run_kind="MIGRATION", launch_argv=launch_argv)
         try:
             result = UpgradeRunner(args.evidence_root).run(qualification["id"], args.old_artifact, args.new_artifact,
                                                            fixture_version=args.fixture_version, keep_environment=args.keep_environment)
@@ -328,7 +352,7 @@ def main(argv: list[str] | None = None) -> int:
                                                   identity=f"QA:rollback:{artifact['sha256']}:{uuid.uuid4().hex[:8]}")
         qualification = service.start_run(artifact_id=artifact["id"], environment_id=environment["id"], profile="rollback",
                                           dataset_version=args.fixture_version, scenario_set_version="rollback",
-                                          run_kind="ROLLBACK")
+                                          run_kind="ROLLBACK", launch_argv=launch_argv)
         try:
             result = UpgradeRunner(args.evidence_root).run(qualification["id"], args.old_artifact, args.new_artifact,
                                                            fixture_version=args.fixture_version, keep_environment=args.keep_environment,
@@ -356,7 +380,7 @@ def main(argv: list[str] | None = None) -> int:
                                                   identity=f"QA:long-simulation:{artifact['sha256']}:{uuid.uuid4().hex[:8]}")
         qualification = service.start_run(artifact_id=artifact["id"], environment_id=environment["id"], profile=args.profile,
                                           dataset_version=args.fixture_version, scenario_set_version="factory-simulation-v1",
-                                          run_kind="LONG_RUNNING_FACTORY_SIMULATION")
+                                          run_kind="LONG_RUNNING_FACTORY_SIMULATION", launch_argv=launch_argv)
         deployer = ArtifactDeployment(args.evidence_root)
         deployment = None
         try:
@@ -370,6 +394,13 @@ def main(argv: list[str] | None = None) -> int:
             final["coverage_snapshot"] = coverage_snapshot(qualification["id"])
             _json(final)
             return 0 if result["status"] == "PASSED" else 1
+        except SystemExit:
+            # Operator cancel (web job launcher -> SIGTERM -> the handler
+            # above). Record the real CANCELLED status instead of leaving
+            # the row stuck at RUNNING forever (spec section 14: a restart
+            # must never mistake a stopped run for a completed one).
+            service.mark_cancelled(qualification["id"])
+            raise
         finally:
             if deployment and not args.keep_environment:
                 deployer.destroy(deployment["namespace"])
@@ -391,7 +422,7 @@ def main(argv: list[str] | None = None) -> int:
                                                   identity=f"QA:backup-restore:{artifact['sha256']}:{uuid.uuid4().hex[:8]}")
         qualification = service.start_run(artifact_id=artifact["id"], environment_id=environment["id"], profile="backup-restore",
                                           dataset_version=args.fixture_version, scenario_set_version="backup-restore",
-                                          run_kind="BACKUP_RESTORE")
+                                          run_kind="BACKUP_RESTORE", launch_argv=launch_argv)
         try:
             result = BackupRestoreRunner(args.evidence_root).run(qualification["id"], args.artifact,
                                                                  fixture_version=args.fixture_version,
@@ -439,7 +470,7 @@ def main(argv: list[str] | None = None) -> int:
         run_kind = {"soak": "SOAK", "offline-burst": "OFFLINE_BURST", "chaos": "CHAOS"}.get(args.command, "FUNCTIONAL")
         qualification = service.start_run(artifact_id=artifact["id"], environment_id=environment["id"], profile=args.command,
                                           dataset_version=args.fixture_version, scenario_set_version=args.command,
-                                          run_kind=run_kind)
+                                          run_kind=run_kind, launch_argv=launch_argv)
         deployer = ArtifactDeployment(args.evidence_root)
         deployment = None
         try:
@@ -489,7 +520,7 @@ def main(argv: list[str] | None = None) -> int:
         qualification = service.start_run(artifact_id=artifact["id"], environment_id=environment["id"], profile="full",
                                           dataset_version=args.fixture_version,
                                           scenario_set_version=args.scenario_set_version,
-                                          run_kind="RELEASE_QUALIFICATION")
+                                          run_kind="RELEASE_QUALIFICATION", launch_argv=launch_argv)
         run_id = qualification["id"]
         deployer = ArtifactDeployment(args.evidence_root)
         deployment = None
@@ -607,7 +638,7 @@ def main(argv: list[str] | None = None) -> int:
                                                   identity=f"QA:replay:{artifact['sha256']}:{uuid.uuid4().hex[:8]}")
         qualification = service.start_run(artifact_id=artifact["id"], environment_id=environment["id"], profile="replay",
                                           dataset_version=args.fixture_version, scenario_set_version="replay",
-                                          run_kind="UI_E2E" if args.suite == "ui_critical" else "FUNCTIONAL")
+                                          run_kind="UI_E2E" if args.suite == "ui_critical" else "FUNCTIONAL", launch_argv=launch_argv)
         deployer = ArtifactDeployment(args.evidence_root)
         deployment = None
         try:
@@ -656,7 +687,7 @@ def main(argv: list[str] | None = None) -> int:
                                               destructive_allowed=args.environment_kind in {"QA", "TEST"})
     qualification = service.start_run(artifact_id=artifact["id"], environment_id=environment["id"],
                                       profile=args.profile, dataset_version=args.dataset_version,
-                                      scenario_set_version=args.scenario_set_version)
+                                      scenario_set_version=args.scenario_set_version, launch_argv=launch_argv)
     config = json.loads(args.suite_config.read_text(encoding="utf-8"))
     runner = QualificationRunner(args.evidence_root)
     for suite in config.get("suites", []):
