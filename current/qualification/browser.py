@@ -19,6 +19,9 @@ PAGES = [
     ("employees.stations_equipment.browser", "employees", "Quản lý nhân viên"),
     ("quality.quantities_rework.browser", "production-trace", "Production Trace"),
     ("reports.kpi_productivity.browser", "employee-productivity", "Năng suất"),
+    ("calendar.shifts.browser", "working-calendar", "Ca làm việc"),
+    ("trace.audit.browser", "business-audit", "Nhật ký nghiệp vụ"),
+    ("imports.exports.qr.browser", "qr-print", "In tem QR"),
 ]
 
 

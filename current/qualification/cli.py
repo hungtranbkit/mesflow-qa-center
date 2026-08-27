@@ -8,7 +8,9 @@ import uuid
 from pathlib import Path
 
 from .policy import evaluate
+from .backup_restore import BackupRestoreRunner
 from .build_integrity import BuildIntegrityRunner
+from .chaos import ChaosRunner
 from .coverage import snapshot as coverage_snapshot
 from .critical_unit import run as run_critical_unit
 from .database import DeterministicDatabase
@@ -17,10 +19,12 @@ from .esp_hil import EspHilRunner
 from .kiosk_emulator import KioskEmulatorRunner
 from .live import LiveMESFlowQualification
 from .load_soak import LoadSoakRunner
+from .offline_burst import OfflineBurstRunner
 from .post_deploy_smoke import PostDeploySmokeRunner
 from .recovery import RecoveryRunner
 from .replay import replay_scenario as replay_scenario_fn
 from .runner import QualificationRunner
+from .scheduler_reliability import SchedulerReliabilityRunner
 from .service import QualificationService
 from .store import connect, now
 from .test_deployment import TestDeploymentRunner
@@ -149,6 +153,9 @@ def main(argv: list[str] | None = None) -> int:
     artifact_run.add_argument("--skip-post-deploy-smoke", action="store_true")
     artifact_run.add_argument("--skip-load-soak", action="store_true")
     artifact_run.add_argument("--soak-window-seconds", type=float, default=60.0)
+    artifact_run.add_argument("--skip-offline-burst", action="store_true")
+    artifact_run.add_argument("--offline-burst-profile", default="CI", choices=["CI", "QUALIFICATION"])
+    artifact_run.add_argument("--skip-scheduler-reliability", action="store_true")
     artifact_run.add_argument("--enable-hil", action="store_true",
                               help="attempt the esp_hil suite (real hardware); NOT_CONFIGURED/BLOCKED honestly "
                                    "when no device or no reachable debug path, never silently skipped")
@@ -199,6 +206,41 @@ def main(argv: list[str] | None = None) -> int:
     soak_cmd.add_argument("--window-seconds", type=float, default=60.0)
     soak_cmd.add_argument("--seed", type=int, default=None)
 
+    offline_burst_cmd = commands.add_parser("offline-burst", help="run only the offline_burst suite (spec section 3), "
+                                                                  "against a fresh isolated deployment of one artifact")
+    offline_burst_cmd.add_argument("--artifact", required=True, type=Path)
+    offline_burst_cmd.add_argument("--fixture-version", default="mesflow-fixture-v1")
+    offline_burst_cmd.add_argument("--evidence-root", type=Path, default=Path("reports/qualification"))
+    offline_burst_cmd.add_argument("--keep-environment", action="store_true")
+    offline_burst_cmd.add_argument("--profile", default="CI", choices=["CI", "QUALIFICATION"])
+    offline_burst_cmd.add_argument("--kiosk-count", type=int, default=None)
+    offline_burst_cmd.add_argument("--seed", type=int, default=None)
+
+    chaos_cmd = commands.add_parser("chaos", help="run controlled app/DB/network/stall faults against a fresh isolated sandbox")
+    chaos_cmd.add_argument("--artifact", required=True, type=Path)
+    chaos_cmd.add_argument("--fixture-version", default="mesflow-fixture-v1")
+    chaos_cmd.add_argument("--evidence-root", type=Path, default=Path("reports/qualification"))
+    chaos_cmd.add_argument("--keep-environment", action="store_true")
+
+    migration_cmd = commands.add_parser("migration", help="run only the upgrade suite (spec section 6, MIGRATION run "
+                                                          "kind) as a first-class producing run: real old artifact + "
+                                                          "representative old-version data -> real migrations -> "
+                                                          "health -> data comparison -> integrity -> critical smoke")
+    migration_cmd.add_argument("--old-artifact", required=True, type=Path)
+    migration_cmd.add_argument("--new-artifact", required=True, type=Path)
+    migration_cmd.add_argument("--fixture-version", default="mesflow-fixture-v1")
+    migration_cmd.add_argument("--evidence-root", type=Path, default=Path("reports/qualification"))
+    migration_cmd.add_argument("--keep-environment", action="store_true")
+
+    backup_restore_cmd = commands.add_parser("backup-restore", help="run only the backup_restore suite (spec section "
+                                                                    "7): real pg_dump from a source sandbox, restored "
+                                                                    "into a SEPARATE sandbox, data comparison + "
+                                                                    "integrity + smoke, never restoring over the source")
+    backup_restore_cmd.add_argument("--artifact", required=True, type=Path)
+    backup_restore_cmd.add_argument("--fixture-version", default="mesflow-fixture-v1")
+    backup_restore_cmd.add_argument("--evidence-root", type=Path, default=Path("reports/qualification"))
+    backup_restore_cmd.add_argument("--keep-environment", action="store_true")
+
     manifest = commands.add_parser("manifest")
     manifest.add_argument("run_id")
     certify = commands.add_parser("certify")
@@ -212,6 +254,74 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "manifest":
         _json(service.run_manifest(args.run_id))
         return 0
+
+    if args.command == "migration":
+        # MIGRATION (spec section 6): a first-class producing run around
+        # the EXISTING upgrade suite (old real artifact + representative
+        # old-version data -> real migrations -> health -> data comparison
+        # -> integrity -> critical smoke) -- UpgradeRunner already does
+        # exactly this and manages its own PRODUCTION_LIKE-shaped disposable
+        # sandbox; this command just gives it its own run_kind and a
+        # standalone CLI entry point instead of only ever running inside
+        # run-artifact's optional --old-artifact path.
+        manifest, err_code = _safe_inspect_package(args.new_artifact)
+        if err_code is not None:
+            return err_code
+        artifact = service.register_artifact(application_version=str(manifest["version"]),
+                                             git_commit=str(manifest.get("source_commit") or "unknown"), path=args.new_artifact)
+        environment = service.attest_environment(name=f"migration-{artifact['sha256'][:12]}-{uuid.uuid4().hex[:8]}",
+                                                  kind="QA", target_url="http://qualification.invalid",
+                                                  database_identity="pending-isolated-postgresql", destructive_allowed=True,
+                                                  identity=f"QA:migration:{artifact['sha256']}:{uuid.uuid4().hex[:8]}")
+        qualification = service.start_run(artifact_id=artifact["id"], environment_id=environment["id"], profile="migration",
+                                          dataset_version=args.fixture_version, scenario_set_version="migration",
+                                          run_kind="MIGRATION")
+        try:
+            result = UpgradeRunner(args.evidence_root).run(qualification["id"], args.old_artifact, args.new_artifact,
+                                                           fixture_version=args.fixture_version, keep_environment=args.keep_environment)
+            final = service.finish_run(qualification["id"])
+            final["suite_result"] = result
+            final["coverage_snapshot"] = coverage_snapshot(qualification["id"])
+            _json(final)
+            return 0 if final["status"] == "PASSED" else 1
+        except Exception as exc:
+            final = service.finish_run(qualification["id"])
+            final["error"] = str(exc)
+            _json(final)
+            return 1
+
+    if args.command == "backup-restore":
+        # BACKUP_RESTORE (spec section 7): BackupRestoreRunner manages its
+        # own SOURCE and RESTORE sandboxes (SandboxManager.deploy() with
+        # distinct namespace_suffix values under the same run) and their
+        # cleanup internally, same self-contained shape as migration/
+        # UpgradeRunner above.
+        manifest, err_code = _safe_inspect_package(args.artifact)
+        if err_code is not None:
+            return err_code
+        artifact = service.register_artifact(application_version=str(manifest["version"]),
+                                             git_commit=str(manifest.get("source_commit") or "unknown"), path=args.artifact)
+        environment = service.attest_environment(name=f"backup-restore-{artifact['sha256'][:12]}-{uuid.uuid4().hex[:8]}",
+                                                  kind="QA", target_url="http://qualification.invalid",
+                                                  database_identity="pending-isolated-postgresql", destructive_allowed=True,
+                                                  identity=f"QA:backup-restore:{artifact['sha256']}:{uuid.uuid4().hex[:8]}")
+        qualification = service.start_run(artifact_id=artifact["id"], environment_id=environment["id"], profile="backup-restore",
+                                          dataset_version=args.fixture_version, scenario_set_version="backup-restore",
+                                          run_kind="BACKUP_RESTORE")
+        try:
+            result = BackupRestoreRunner(args.evidence_root).run(qualification["id"], args.artifact,
+                                                                 fixture_version=args.fixture_version,
+                                                                 keep_environment=args.keep_environment)
+            final = service.finish_run(qualification["id"])
+            final["suite_result"] = result
+            final["coverage_snapshot"] = coverage_snapshot(qualification["id"])
+            _json(final)
+            return 0 if final["status"] == "PASSED" else 1
+        except Exception as exc:
+            final = service.finish_run(qualification["id"])
+            final["error"] = str(exc)
+            _json(final)
+            return 1
 
     if args.command == "certify":
         decision = evaluate(args.artifact_id, args.environment_id, args.run_id,
@@ -228,7 +338,7 @@ def main(argv: list[str] | None = None) -> int:
             _json({"error": str(exc), "error_class": type(exc).__name__})
             return 1
 
-    if args.command in ("hil", "soak"):
+    if args.command in ("hil", "soak", "offline-burst", "chaos"):
         manifest, err_code = _safe_inspect_package(args.artifact)
         if err_code is not None:
             return err_code
@@ -238,13 +348,14 @@ def main(argv: list[str] | None = None) -> int:
                                                   kind="QA", target_url="http://qualification.invalid",
                                                   database_identity="pending-isolated-postgresql", destructive_allowed=True,
                                                   identity=f"QA:{args.command}:{artifact['sha256']}:{uuid.uuid4().hex[:8]}")
-        # soak maps directly onto the SOAK run kind; hil has no exact
-        # vocabulary match (spec section 4's list has no HIL-specific
-        # entry) -- FUNCTIONAL is the closest honest fit for "one
-        # standalone functional-ish suite run", not a fabricated category.
+        # soak/offline-burst map directly onto their own run kinds; hil has
+        # no exact vocabulary match (spec section 4's list has no
+        # HIL-specific entry) -- FUNCTIONAL is the closest honest fit for
+        # "one standalone functional-ish suite run", not a fabricated category.
+        run_kind = {"soak": "SOAK", "offline-burst": "OFFLINE_BURST", "chaos": "CHAOS"}.get(args.command, "FUNCTIONAL")
         qualification = service.start_run(artifact_id=artifact["id"], environment_id=environment["id"], profile=args.command,
                                           dataset_version=args.fixture_version, scenario_set_version=args.command,
-                                          run_kind="SOAK" if args.command == "soak" else "FUNCTIONAL")
+                                          run_kind=run_kind)
         deployer = ArtifactDeployment(args.evidence_root)
         deployment = None
         try:
@@ -253,6 +364,15 @@ def main(argv: list[str] | None = None) -> int:
                 DeterministicDatabase(args.evidence_root).seed(qualification["id"], deployment["db_container"], args.fixture_version)
                 result = LoadSoakRunner(args.evidence_root).run(qualification["id"], deployment, profile=args.profile,
                                                                 speed_label=args.speed, window_seconds=args.window_seconds, seed=args.seed)
+            elif args.command == "offline-burst":
+                deployment = deployer.deploy(qualification["id"], args.artifact, fixture_version=args.fixture_version)
+                DeterministicDatabase(args.evidence_root).seed(qualification["id"], deployment["db_container"], args.fixture_version)
+                result = OfflineBurstRunner(args.evidence_root).run(qualification["id"], deployment, profile=args.profile,
+                                                                    kiosk_count=args.kiosk_count, seed=args.seed)
+            elif args.command == "chaos":
+                deployment = deployer.deploy(qualification["id"], args.artifact, fixture_version=args.fixture_version)
+                DeterministicDatabase(args.evidence_root).seed(qualification["id"], deployment["db_container"], args.fixture_version)
+                result = ChaosRunner(args.evidence_root).run(qualification["id"], deployment)
             else:
                 # esp_hil doesn't need its own isolated Postgres/app -- it
                 # only needs the artifact registered for identity, plus
@@ -316,7 +436,8 @@ def main(argv: list[str] | None = None) -> int:
                     lambda: PostDeploySmokeRunner(args.evidence_root).run(run_id, deployment["target_url"]))
 
             live = LiveMESFlowQualification(run_id, deployment["target_url"], deployment["db_container"],
-                                            args.evidence_root, intentional_wrong_quantity=args.intentional_wrong_quantity)
+                                            args.evidence_root, intentional_wrong_quantity=args.intentional_wrong_quantity,
+                                            app_container=deployment["app_container"])
             results["api_contract"] = live.api_contracts()
             results["integration"] = live.integration()
             results["mes_workflows"] = live.workflows()
@@ -351,6 +472,18 @@ def main(argv: list[str] | None = None) -> int:
                     lambda: LoadSoakRunner(args.evidence_root).run(run_id, deployment, window_seconds=args.soak_window_seconds))
             else:
                 results["load_soak"] = {"status": "NOT_IMPLEMENTED", "reason": "--skip-load-soak was passed"}
+
+            if not args.skip_offline_burst:
+                results["offline_burst"] = _run_suite_or_record_failure(run_id, "offline_burst", "recovery",
+                    lambda: OfflineBurstRunner(args.evidence_root).run(run_id, deployment, profile=args.offline_burst_profile))
+            else:
+                results["offline_burst"] = {"status": "NOT_IMPLEMENTED", "reason": "--skip-offline-burst was passed"}
+
+            if not args.skip_scheduler_reliability:
+                results["scheduler_reliability"] = _run_suite_or_record_failure(run_id, "scheduler_reliability", "recovery",
+                    lambda: SchedulerReliabilityRunner(args.evidence_root).run(run_id, deployment))
+            else:
+                results["scheduler_reliability"] = {"status": "NOT_IMPLEMENTED", "reason": "--skip-scheduler-reliability was passed"}
 
             if args.enable_hil:
                 results["esp_hil"] = _run_suite_or_record_failure(run_id, "esp_hil", "hil",
@@ -407,7 +540,7 @@ def main(argv: list[str] | None = None) -> int:
             service.conn.commit()
             DeterministicDatabase(args.evidence_root).seed(qualification["id"], deployment["db_container"], args.fixture_version)
             live = LiveMESFlowQualification(qualification["id"], deployment["target_url"], deployment["db_container"],
-                                            args.evidence_root)
+                                            args.evidence_root, app_container=deployment["app_container"])
             suite_methods = {"api_contract": live.api_contracts, "integration": live.integration,
                              "mes_workflows": live.workflows, "invariants": live.invariants}
             if args.suite == "ui_critical":

@@ -78,7 +78,7 @@ class RecoveryRunner:
         results = self._integrity.assert_ok(run_id, db_container, context="post-interruption")
         return {"checks": list(results), "violations": 0}
 
-    def run(self, run_id: str, deployment: dict[str, Any]) -> dict[str, Any]:
+    def run(self, run_id: str, deployment: dict[str, Any], *, suite_key: str = "recovery") -> dict[str, Any]:
         namespace = deployment["namespace"]
         app, db = deployment["app_container"], deployment["db_container"]
         target_url = deployment["target_url"]
@@ -86,12 +86,18 @@ class RecoveryRunner:
 
         suite_id = f"suite-{uuid.uuid4().hex}"
         self.conn.execute("""INSERT INTO qa_suite_runs(id,qualification_run_id,suite_key,layer,required,status,
-          started_at,command_json) VALUES(?,?,'recovery','recovery',1,'RUNNING',?,'[]')""", (suite_id, run_id, now()))
+          started_at,command_json) VALUES(?,?,?,'recovery',1,'RUNNING',?,'[]')""", (suite_id, run_id, suite_key, now()))
         self.conn.commit()
         results: list[dict[str, Any]] = []
 
         def scenario(key, fn):
-            result = self._scenario(suite_id, run_id, key, fn)
+            def measured():
+                started = time.monotonic()
+                actual = fn()
+                if isinstance(actual, dict):
+                    actual["recovery_time_seconds"] = round(time.monotonic() - started, 3)
+                return actual
+            result = self._scenario(suite_id, run_id, key, measured)
             results.append(result)
             return result
 

@@ -33,14 +33,17 @@ REGISTRY = Path(__file__).with_name("features.json")
 SUITE_LAYER_CREDITS: dict[str, dict[str, Any]] = {
     "critical_unit": {
         "layer": "unit",
-        # scheduling.dependencies_wip also requires 'unit' but is
-        # deliberately EXCLUDED here: no file in CRITICAL_UNIT_TEST_FILES
-        # actually exercises scheduling/dependency/WIP logic (they cover
-        # session lifecycle, shift/time-boundary math, domain
-        # authorization rules, and quantity/session-service validation) --
-        # that feature's 'unit' requirement stays honestly unmet rather
-        # than fabricated.
-        "feature_keys": ["auth.sessions_roles", "sessions.lifecycle", "calendar.shifts", "quality.quantities_rework"],
+        # scheduling.dependencies_wip added 2026-08-27: re-audited
+        # CRITICAL_UNIT_TEST_FILES against the real mesflow source and found
+        # tests/test_correctness_p2_unit.py directly imports and unit-tests
+        # operation_wip()/priority_for_operation() from
+        # mesflow.db.repositories.scheduling (the exact scheduling/WIP-
+        # dependency logic this feature covers) -- a real match, not
+        # fabricated. Every other feature requiring 'unit' has a similarly
+        # real, hand-verified match against a specific test file's own
+        # documented subject matter.
+        "feature_keys": ["auth.sessions_roles", "sessions.lifecycle", "calendar.shifts", "quality.quantities_rework",
+                         "scheduling.dependencies_wip"],
     },
 }
 

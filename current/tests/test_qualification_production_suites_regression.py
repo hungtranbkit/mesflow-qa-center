@@ -20,6 +20,7 @@ from engine import qa_store
 from qualification.coverage import read_snapshot, report, snapshot
 from qualification.deployment import DeploymentError
 from qualification.kiosk_emulator import KioskV2Client
+from qualification.offline_burst import PROFILES as OFFLINE_BURST_PROFILES
 from qualification.recovery import _require_namespace_owned
 from qualification.replay import replay_scenario
 from qualification.service import QualificationError, QualificationService
@@ -70,6 +71,19 @@ def test_recovery_refuses_an_unrecognized_namespace_prefix():
 def test_recovery_accepts_containers_genuinely_inside_its_own_namespace():
     _require_namespace_owned("mesflow-qualification-abc123", "mesflow-qualification-abc123-app",
                              "mesflow-qualification-abc123-db")  # must not raise
+
+
+def test_chaos_namespace_guard_refuses_production_like_targets_too():
+    # CHAOS delegates to this exact shared guard; a target merely containing
+    # the word "production" must never gain destructive authority.
+    with pytest.raises(DeploymentError, match="unrecognized namespace"):
+        _require_namespace_owned("mesflow-production", "mesflow-production-app", "mesflow-production-db")
+
+
+def test_offline_burst_has_real_small_and_medium_profiles():
+    assert OFFLINE_BURST_PROFILES["CI"]["kiosk_count"] >= 2
+    assert OFFLINE_BURST_PROFILES["QUALIFICATION"]["kiosk_count"] > OFFLINE_BURST_PROFILES["CI"]["kiosk_count"]
+    assert "worker_count" not in OFFLINE_BURST_PROFILES["CI"], "every configured kiosk is now a real business worker"
 
 
 # --- test_deployment: the isolation-name safety regex -----------------------

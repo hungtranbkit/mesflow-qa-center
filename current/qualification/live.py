@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import subprocess
 import uuid
 from typing import Any, Callable
 
@@ -11,6 +12,7 @@ import requests
 from .database import DeterministicDatabase
 from .evidence import EvidenceStore
 from .integrity_runner import IntegrityRunner
+from .kiosk_emulator import KioskV2Client
 from .store import connect, now
 
 
@@ -23,10 +25,12 @@ def normalized_fingerprint(scenario: str, step: str, endpoint: str, error_class:
 
 
 class LiveMESFlowQualification:
-    def __init__(self, run_id: str, target_url: str, db_container: str, evidence_root, *, intentional_wrong_quantity: bool = False):
+    def __init__(self, run_id: str, target_url: str, db_container: str, evidence_root, *,
+                 intentional_wrong_quantity: bool = False, app_container: str = ""):
         self.run_id = run_id
         self.target = target_url.rstrip("/")
         self.db_container = db_container
+        self.app_container = app_container
         self.conn = connect()
         self.evidence = EvidenceStore(evidence_root)
         self.database = DeterministicDatabase(evidence_root)
@@ -34,6 +38,18 @@ class LiveMESFlowQualification:
         self.http = requests.Session()
         self.intentional_wrong_quantity = intentional_wrong_quantity
         self.calls: list[dict[str, Any]] = []
+
+    def exec_in_app(self, *args: str, timeout: int = 60) -> subprocess.CompletedProcess:
+        """Runs a command inside the deployment's own app container (e.g.
+        the exact `python -m mesflow.cli reconcile-exceptions` a real
+        production cron entry would run) -- requires app_container to have
+        been supplied at construction; scenarios needing this must check
+        self.app_container first and report BLOCKED rather than raise a
+        confusing AttributeError-style failure when it's empty."""
+        if not self.app_container:
+            raise AssertionError("app_container was not supplied to this LiveMESFlowQualification instance")
+        return subprocess.run(["docker", "exec", self.app_container, *args],
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
 
     def request(self, method: str, path: str, **kwargs: Any) -> requests.Response:
         response = self.http.request(method, self.target + path, timeout=15, **kwargs)
@@ -121,6 +137,11 @@ class LiveMESFlowQualification:
             ("employees.stations_equipment.api_contract", "/api/employees", {"ok", "items"}),
             ("trace.audit.api_contract", "/api/production-orders", {"ok", "items"}),
             ("reports.kpi_productivity.api_contract", "/api/reports/employee-performance", {"ok"}),
+            ("sessions.lifecycle.api_contract", "/api/work-sessions", {"ok", "items"}),
+            ("sessions.group_supervisor.api_contract", "/api/work-sessions", {"ok", "items"}),
+            ("health.jobs_notifications.api_contract", "/api/system/health", {"ok"}),
+            ("kiosk.web_legacy_v2.api_contract", "/api/kiosk-web/health", {"ok"}),
+            ("imports.exports.qr.api_contract", "/api/qr-labels", {"ok"}),
         ]
         values = [result]
         for feature_key, path, fields in feature_contracts:
@@ -228,6 +249,112 @@ class LiveMESFlowQualification:
             assert po["status"] == "IN_PROGRESS" and po["planned_quantity"] == 100
             return {"operation": operation, "production_order": po}
         results.append(self._scenario(suite, "production_orders.lifecycle.aggregate_progress", "API", po_progress))
+
+        def scheduling_dependency_satisfied():
+            # Positive-path complement to integration()'s dependency-gate
+            # rejection: once the predecessor is genuinely COMPLETED, the
+            # downstream operation becomes actionable and a full real
+            # start->finish workflow succeeds. A fresh, fully disposable
+            # upstream/downstream pair (never QA-PO-RUN-OP) so this can
+            # never disturb po_progress()'s exact cumulative assertions above.
+            base = self.database.query_json(self.db_container,
+                "SELECT id part_id, production_order_id po_id FROM operations WHERE code='QA-PO-LATE-OP'")[0]
+            upstream_code = f"QA-SCHED-UP-{uuid.uuid4().hex[:8]}"
+            downstream_code = f"QA-SCHED-DOWN-{uuid.uuid4().hex[:8]}"
+            self.database._psql(self.db_container, f"""
+                INSERT INTO operations(production_order_id,part_id,code,name,done_qty,defect_qty,rework_qty,status,sort_order,qr)
+                VALUES({base['po_id']},{base['part_id']},'{upstream_code}','Sched Upstream',5,0,0,'COMPLETED',3,'WF|OP|{upstream_code}');
+            """)
+            upstream_id = self.database.query_json(self.db_container, f"SELECT id FROM operations WHERE code='{upstream_code}'")[0]["id"]
+            self.database._psql(self.db_container, f"""
+                INSERT INTO operations(production_order_id,part_id,code,name,done_qty,defect_qty,rework_qty,status,sort_order,qr,predecessor_operation_id)
+                VALUES({base['po_id']},{base['part_id']},'{downstream_code}','Sched Downstream',0,0,0,'PLANNED',4,'WF|OP|{downstream_code}',{upstream_id});
+            """)
+            downstream_id = self.database.query_json(self.db_container, f"SELECT id FROM operations WHERE code='{downstream_code}'")[0]["id"]
+            request_id = f"QA-SCHED-OK-{uuid.uuid4().hex[:8]}"
+            start = self.request("POST", "/api/work-sessions/start",
+                json={"employee_id": ids["employee2"], "operation_id": downstream_id, "request_id": request_id})
+            assert start.status_code == 201, f"dependency-satisfied downstream op was still rejected: {start.status_code} {start.text}"
+            finish = self.request("POST", f"/api/work-sessions/{start.json()['session']['id']}/finish",
+                json={"good_qty": 3, "request_id": request_id + "-FINISH"})
+            assert finish.status_code == 200 and finish.json()["session"]["status"] == "CLOSED"
+            return {"upstream_operation_id": upstream_id, "downstream_operation_id": downstream_id,
+                    "session_id": start.json()["session"]["id"]}
+        results.append(self._scenario(suite, "scheduling.dependencies_wip.workflow", "API", scheduling_dependency_satisfied))
+
+        def calendar_shifts_workflow():
+            shift = self.database.query_json(self.db_container, "SELECT id,code FROM work_shifts WHERE code='DAY'")[0]
+            dashboard = self.request("GET", "/api/dashboard/shift", params={"shift_id": shift["id"]})
+            assert dashboard.status_code == 200 and dashboard.json().get("ok"), dashboard.text
+            return {"shift_id": shift["id"], "shift_code": shift["code"], "dashboard_ok": True}
+        results.append(self._scenario(suite, "calendar.shifts.workflow", "API", calendar_shifts_workflow))
+
+        def kiosk_legacy_workflow():
+            operation = self.database.query_json(self.db_container,
+                "SELECT id,qr FROM operations WHERE code='QA-PO-LATE-OP'")[0]
+            employee = self.database.query_json(self.db_container,
+                "SELECT id,qr FROM employees WHERE employee_no='QA-EMP-002'")[0]
+            scan_emp = self.request("POST", "/api/kiosk-web/scan", json={"qr": employee["qr"]})
+            scan_op = self.request("POST", "/api/kiosk-web/scan", json={"qr": operation["qr"]})
+            assert scan_emp.status_code == 200 and scan_op.status_code == 200, (scan_emp.text, scan_op.text)
+            request_id = f"WEB-LEGACY-{uuid.uuid4().hex[:8]}"
+            start = self.request("POST", "/api/kiosk-web/start",
+                json={"employee_id": employee["id"], "operation_id": operation["id"], "request_id": request_id})
+            assert start.status_code == 201 and start.json().get("ok"), start.text
+            session_id = start.json()["session"]["id"]
+            finish = self.request("POST", f"/api/kiosk-web/finish/{session_id}",
+                json={"good_qty": 2, "defect_qty": 0, "request_id": request_id + "-FINISH"})
+            assert finish.status_code == 200 and finish.json().get("ok"), finish.text
+            return {"session_id": session_id, "legacy_protocol_workflow": "scan->scan->start->finish", "finished": True}
+        results.append(self._scenario(suite, "kiosk.web_legacy_v2.workflow", "API", kiosk_legacy_workflow))
+
+        def kiosk_offline_recovery_workflow():
+            # Real found-by-hand bug the first time this ran: missing the
+            # employee RE-scan between the operation scan (opens the
+            # session) and the quantity submit (closes it) -- the v2
+            # protocol requires SESSION_ACTIVE -> (re-scan employee) ->
+            # QUANTITY_INPUT -> quantity before a close is accepted (see
+            # kiosk_emulator.py's own session_close_normal_quantity for the
+            # same sequence). Without it the quantity submit was silently
+            # REJECTED (HTTP 200, accepted:false) -- and this scenario's own
+            # check only looked at the HTTP-level replay status, never at
+            # `accepted`, so it reported success while leaving QA-EMP-002's
+            # session open. That dangling session then broke unrelated
+            # LATER kiosk_emulator.py scenarios reusing the same employee,
+            # with a BUSINESS_CONFLICT that took real cross-suite debugging
+            # to trace back here.
+            client = KioskV2Client(self.http, self.target, f"qa-wf-kiosk-{uuid.uuid4().hex[:8]}")
+            client.bootstrap()
+            client.go_offline()
+            client.scan("WF|EMP|QA-EMP-002")
+            op_qr = self.database.query_json(self.db_container, "SELECT qr FROM operations WHERE code='QA-PO-LATE-OP'")[0]["qr"]
+            client.scan(op_qr)
+            client.scan("WF|EMP|QA-EMP-002")  # re-scan -> QUANTITY_INPUT
+            client.quantity(good=1, defect=0, rework=0)
+            replayed = client.reconnect_and_replay()
+            not_accepted = [(status, body) for status, body in replayed if status != "PASSED" or body.get("accepted") is False]
+            if not_accepted or not replayed:
+                raise AssertionError(f"offline-queued business events did not all replay as genuinely accepted: {replayed}")
+            final_state = replayed[-1][1]["state"]["name"]
+            if final_state != "WAIT_EMPLOYEE":
+                raise AssertionError(f"session did not actually close after the replayed quantity submit: final_state={final_state}")
+            open_sessions = self.database.query_json(self.db_container,
+                "SELECT count(*) n FROM work_sessions ws JOIN employees e ON e.id=ws.employee_id "
+                "WHERE e.employee_no='QA-EMP-002' AND ws.status='OPEN'")[0]["n"]
+            if open_sessions:
+                raise AssertionError(f"QA-EMP-002 has {open_sessions} dangling OPEN session(s) after this scenario -- would break later suites")
+            return {"queued_event_count": len(replayed), "final_state": final_state}
+        results.append(self._scenario(suite, "kiosk.offline_recovery.workflow", "API", kiosk_offline_recovery_workflow))
+
+        def imports_exports_qr_workflow():
+            response = self.request("GET", "/api/operations/export.xlsx")
+            assert response.status_code == 200, response.text
+            content_type = response.headers.get("Content-Type", "")
+            assert "spreadsheet" in content_type or "excel" in content_type.lower(), f"unexpected Content-Type: {content_type}"
+            assert len(response.content) > 0, "export.xlsx returned an empty body"
+            return {"content_type": content_type, "body_bytes": len(response.content)}
+        results.append(self._scenario(suite, "imports.exports.qr.workflow", "API", imports_exports_qr_workflow))
+
         self._finish_suite(suite)
         return results
 
@@ -258,6 +385,138 @@ class LiveMESFlowQualification:
                     assert value >= 0
                 return {"database_count": value, "deployed_runtime": self.target}
             values.append(self._scenario(suite, key, "API", check))
+
+        def auth_integration():
+            me = self.request("GET", "/api/auth/me").json()
+            assert me.get("ok") and me["user"]["role"] == "admin" and me["user"]["permissions"]
+            audit = self.database.query_json(self.db_container,
+                "SELECT count(*) n FROM audit_logs WHERE action='LOGIN_SUCCESS'")[0]["n"]
+            assert audit >= 1, "no LOGIN_SUCCESS row persisted in audit_logs after a real login"
+            return {"role": me["user"]["role"], "permission_count": len(me["user"]["permissions"]),
+                    "login_audit_rows": audit}
+        values.append(self._scenario(suite, "auth.sessions_roles.integration", "API", auth_integration))
+
+        def scheduling_dependency_gate():
+            # Ad hoc, scenario-scoped operation with a REAL predecessor
+            # dependency (spec: "scheduling.dependencies_wip") -- created
+            # here rather than in the shared fixture SQL, since the fixture
+            # currently has no operation with a configured
+            # predecessor_operation_id at all, and every other suite's
+            # exact-count assertions against the shared fixture rows must
+            # stay untouched. QA-PO-RUN-OP (the predecessor) is 'IN_PROGRESS'
+            # with done_qty=0, so a downstream operation depending on it must
+            # be rejected as not-yet-actionable -- the real, enforced
+            # execution.py business rule, not a QA-only simulation of it.
+            ids = self._ids()
+            upstream_id = ids["operation_id"]
+            downstream_code = f"QA-SCHED-DEP-{uuid.uuid4().hex[:8]}"
+            self.database._psql(self.db_container, f"""
+                INSERT INTO operations(production_order_id,part_id,code,name,done_qty,defect_qty,rework_qty,status,sort_order,qr,predecessor_operation_id)
+                SELECT production_order_id,part_id,'{downstream_code}','Scheduling Dependency Test Op',0,0,0,'PLANNED',2,'WF|OP|{downstream_code}',{upstream_id}
+                FROM operations WHERE id={upstream_id};
+            """)
+            downstream_id = self.database.query_json(self.db_container,
+                f"SELECT id FROM operations WHERE code='{downstream_code}'")[0]["id"]
+            response = self.request("POST", "/api/work-sessions/start",
+                json={"employee_id": ids["employee2"], "operation_id": downstream_id,
+                      "request_id": f"QA-SCHED-{uuid.uuid4().hex[:8]}"})
+            if response.status_code != 409:
+                raise AssertionError(f"expected 409 dependency-gated rejection, got {response.status_code} {response.text}")
+            no_session = self.database.query_json(self.db_container,
+                f"SELECT count(*) n FROM work_sessions WHERE operation_id={downstream_id}")[0]["n"]
+            assert no_session == 0, "a session was created despite the dependency gate rejecting the start"
+            return {"downstream_operation_id": downstream_id, "predecessor_operation_id": upstream_id,
+                    "rejection_status": response.status_code, "rejection_body": response.json()}
+        values.append(self._scenario(suite, "scheduling.dependencies_wip.integration", "API", scheduling_dependency_gate))
+
+        def calendar_shifts_integration():
+            shifts = self.database.query_json(self.db_container, "SELECT count(*) n FROM work_shifts")[0]["n"]
+            intervals = self.database.query_json(self.db_container, "SELECT count(*) n FROM work_shift_intervals")[0]["n"]
+            assert shifts >= 2, f"expected the migration-seeded DAY/NIGHT shifts, found {shifts}"
+            assert intervals >= 2, f"expected real work/break intervals, found {intervals}"
+            api_shifts = self.request("GET", "/api/settings/working-calendar").json()
+            assert api_shifts.get("ok") and len(api_shifts.get("shifts", [])) == shifts, \
+                f"API-reported shift count ({len(api_shifts.get('shifts', []))}) disagrees with DB ({shifts})"
+            return {"db_shift_count": shifts, "db_interval_count": intervals, "api_shift_count": len(api_shifts["shifts"])}
+        values.append(self._scenario(suite, "calendar.shifts.integration", "API", calendar_shifts_integration))
+
+        def quality_rework_integration():
+            # QA-PO-LATE-OP, NOT ids['operation_id'] (QA-PO-RUN-OP) --
+            # workflows()'s po_progress() asserts EXACT cumulative done_qty/
+            # defect_qty/rework_qty on QA-PO-RUN-OP across its own fixed
+            # scenario sequence; touching it here (integration() runs
+            # BEFORE workflows() in the CLI's suite order) silently
+            # corrupted those exact-value assertions -- a real bug found by
+            # hand the first time this scenario ran for real.
+            employee_id = self.database.query_json(self.db_container,
+                "SELECT id FROM employees WHERE employee_no='QA-EMP-002'")[0]["id"]
+            operation_id = self.database.query_json(self.db_container,
+                "SELECT id FROM operations WHERE code='QA-PO-LATE-OP'")[0]["id"]
+            request_id = f"QA-INTEG-REWORK-{uuid.uuid4().hex[:8]}"
+            start = self.request("POST", "/api/work-sessions/start",
+                json={"employee_id": employee_id, "operation_id": operation_id, "request_id": request_id})
+            assert start.status_code == 201, start.text
+            sid = start.json()["session"]["id"]
+            finish = self.request("POST", f"/api/work-sessions/{sid}/finish",
+                json={"good_qty": 1, "defect_qty": 2, "rework_qty": 2, "request_id": request_id + "-FINISH"})
+            assert finish.status_code == 200
+            movements = self.database.query_json(self.db_container,
+                f"SELECT movement_type,delta FROM quantity_movements WHERE session_id={sid} ORDER BY movement_type")
+            assert movements, "no quantity_movements rows persisted for a session with real defect/rework quantities"
+            return {"session_id": sid, "movements": movements}
+        values.append(self._scenario(suite, "quality.quantities_rework.integration", "API", quality_rework_integration))
+
+        def kiosk_legacy_integration():
+            emp = self.database.query_json(self.db_container,
+                "SELECT qr FROM employees WHERE employee_no='QA-EMP-002'")[0]["qr"]
+            op = self.database.query_json(self.db_container,
+                "SELECT qr FROM operations WHERE code='QA-PO-RUN-OP'")[0]["qr"]
+            scan1 = self.request("POST", "/api/kiosk-web/scan", json={"qr": emp})
+            assert scan1.status_code == 200 and scan1.json().get("ok") and scan1.json().get("type") == "employee", scan1.text
+            scan2 = self.request("POST", "/api/kiosk-web/scan", json={"qr": op})
+            assert scan2.status_code == 200 and scan2.json().get("ok") and scan2.json().get("type") == "operation", scan2.text
+            return {"employee_lookup": scan1.json()["employee"]["employee_no"], "operation_lookup": scan2.json()["operation"]["code"]}
+        values.append(self._scenario(suite, "kiosk.web_legacy_v2.integration", "API", kiosk_legacy_integration))
+
+        def kiosk_offline_recovery_integration():
+            client = KioskV2Client(self.http, self.target, f"qa-integ-kiosk-{uuid.uuid4().hex[:8]}")
+            client.bootstrap()
+            client.go_offline()
+            client.scan("WF|EMP|QA-EMP-001")
+            replayed = client.reconnect_and_replay()
+            if not replayed or replayed[0][0] != "PASSED":
+                raise AssertionError(f"queued offline event did not replay successfully: {replayed}")
+            return {"queued_and_replayed": len(replayed), "final_state": replayed[-1][1]["state"]["name"]}
+        values.append(self._scenario(suite, "kiosk.offline_recovery.integration", "API", kiosk_offline_recovery_integration))
+
+        def exceptions_reconciliation_integration():
+            listing = self.request("GET", "/api/exceptions").json()
+            assert listing.get("ok"), listing
+            table_exists = self.database.query_json(self.db_container,
+                "SELECT count(*) n FROM information_schema.tables WHERE table_name='exception_records'")[0]["n"]
+            assert table_exists == 1, "exception_records table is missing"
+            return {"listing_ok": True, "exception_records_table_present": True}
+        values.append(self._scenario(suite, "exceptions.reconciliation.integration", "API", exceptions_reconciliation_integration))
+
+        def health_jobs_integration():
+            jobs = self.database.query_json(self.db_container,
+                "SELECT job_name,last_status FROM scheduled_job_health ORDER BY job_name")
+            assert jobs, "scheduled_job_health has no rows -- exception_reconciliation/shift_session_reconciliation jobs are not registered"
+            names = {row["job_name"] for row in jobs}
+            assert {"exception_reconciliation", "shift_session_reconciliation"}.issubset(names), \
+                f"expected both real scheduled jobs registered, found {names}"
+            return {"jobs": jobs}
+        values.append(self._scenario(suite, "health.jobs_notifications.integration", "API", health_jobs_integration))
+
+        def imports_exports_qr_integration():
+            labels = self.request("GET", "/api/qr-labels", params={"type": "EMPLOYEE"}).json()
+            assert labels.get("ok") and labels.get("items"), labels
+            employee_count = self.database.query_json(self.db_container, "SELECT count(*) n FROM employees")[0]["n"]
+            assert len(labels["items"]) == employee_count, \
+                f"QR label catalogue returned {len(labels['items'])} employees, DB has {employee_count}"
+            return {"qr_label_count": len(labels["items"]), "employee_count": employee_count}
+        values.append(self._scenario(suite, "imports.exports.qr.integration", "API", imports_exports_qr_integration))
+
         self._finish_suite(suite)
         return values
 

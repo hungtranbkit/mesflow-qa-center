@@ -52,13 +52,25 @@ def test_a_passed_command_level_suite_credits_its_mapped_features_unit_layer_onl
     assert "api" in credited["missing_layers"] or "integration" in credited["missing_layers"]
     assert set(credited["missing_drivers"]) == {"API", "BROWSER"}
 
-    # scheduling.dependencies_wip also requires 'unit' but is deliberately
-    # excluded from the mapping (no critical_unit test file actually
-    # exercises scheduling/dependency/WIP logic) -- its 'unit' requirement
-    # must stay honestly unmet.
-    excluded = by_key["scheduling.dependencies_wip"]
-    assert "unit" in excluded["missing_layers"]
-    assert excluded["suite_level_evidence"] == []
+    # scheduling.dependencies_wip also requires 'unit' -- re-audited against
+    # the real mesflow source (2026-08-27) and confirmed
+    # tests/test_correctness_p2_unit.py (already in CRITICAL_UNIT_TEST_FILES)
+    # directly unit-tests operation_wip()/priority_for_operation() from
+    # mesflow.db.repositories.scheduling, a genuine match, so it is credited
+    # the same way auth.sessions_roles is.
+    scheduling = by_key["scheduling.dependencies_wip"]
+    assert "unit" in scheduling["passed_layers"]
+    assert "unit" not in scheduling["missing_layers"]
+    assert {"suite_key": "critical_unit", "suite_run_id": "suite-critical-unit-1", "credited_layer": "unit"} \
+        in scheduling["suite_level_evidence"]
+
+    # employees.stations_equipment does NOT require the 'unit' layer at all
+    # (features.json) -- proves the credit mechanism only ever touches
+    # features that actually declare the mapped layer as required, never
+    # blanket-applies to every feature.
+    uncredited = by_key["employees.stations_equipment"]
+    assert "unit" not in uncredited.get("required_layers", [])
+    assert uncredited["suite_level_evidence"] == []
 
 
 def test_suite_level_credit_only_applies_when_the_suite_actually_passed(tmp_path):

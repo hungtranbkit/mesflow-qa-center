@@ -108,11 +108,16 @@ class SandboxManager:
             raise DeploymentError("artifact image bundle missing")
         return manifest, image_tar, temp
 
-    def deploy(self, run_id: str, artifact_path: Path, *, fixture_version: str) -> dict[str, Any]:
+    def deploy(self, run_id: str, artifact_path: Path, *, fixture_version: str, namespace_suffix: str | None = None) -> dict[str, Any]:
         run = self.conn.execute("SELECT q.*,a.sha256,a.filename FROM qa_qualification_runs q JOIN qa_artifacts a ON a.id=q.artifact_id WHERE q.id=?", (run_id,)).fetchone()
         if not run or _sha(artifact_path.resolve()) != run["sha256"]:
             raise DeploymentError("artifact bytes do not match qualification run")
-        suffix = re.sub(r"[^a-z0-9]", "", run_id.lower())[-12:]
+        # namespace_suffix lets a caller that needs MORE THAN ONE sandbox
+        # for the same qualification run (BACKUP_RESTORE's separate source/
+        # restore sandboxes) avoid a namespace collision -- the default
+        # (None) preserves the exact original derivation, so every existing
+        # single-sandbox-per-run caller is unaffected.
+        suffix = namespace_suffix or re.sub(r"[^a-z0-9]", "", run_id.lower())[-12:]
         namespace = f"mesflow-qualification-{suffix}"
         app, db = f"{namespace}-app", f"{namespace}-db"
         network, volume = f"{namespace}-net", f"{namespace}-pg"

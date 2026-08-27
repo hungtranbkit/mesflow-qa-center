@@ -88,7 +88,8 @@ class UpgradeRunner:
         raise DeploymentError(f"{app} did not become ready within {timeout_seconds}s")
 
     def run(self, run_id: str, old_artifact_path: Path, new_artifact_path: Path, *,
-            fixture_version: str = "mesflow-fixture-v1", keep_environment: bool = False) -> dict[str, Any]:
+            fixture_version: str = "mesflow-fixture-v1", keep_environment: bool = False,
+            perform_rollback: bool = False) -> dict[str, Any]:
         suite_id = f"suite-{uuid.uuid4().hex}"
         self.conn.execute("""INSERT INTO qa_suite_runs(id,qualification_run_id,suite_key,layer,required,status,
           started_at,command_json) VALUES(?,?,'upgrade','upgrade',1,'RUNNING',?,'[]')""", (suite_id, run_id, now()))
@@ -211,7 +212,7 @@ class UpgradeRunner:
             scenario("upgrade.migration_head_valid", phase_migration_head_valid)
 
             def phase_critical_workflow_after_upgrade():
-                live = LiveMESFlowQualification(run_id, state["new_target_url"], db, self.evidence_root)
+                live = LiveMESFlowQualification(run_id, state["new_target_url"], db, self.evidence_root, app_container=new_app)
                 live.login()
                 workflow_results = live.workflows(suite_key="upgrade_post_workflow_smoke")
                 failed = [r for r in workflow_results if r["status"] != "PASSED"]
