@@ -19,6 +19,7 @@ from .esp_hil import EspHilRunner
 from .kiosk_emulator import KioskEmulatorRunner
 from .live import LiveMESFlowQualification
 from .load_soak import LoadSoakRunner
+from .long_simulation import LongSimulationRunner, PROFILES as LONG_SIMULATION_PROFILES
 from .offline_burst import OfflineBurstRunner
 from .post_deploy_smoke import PostDeploySmokeRunner
 from .recovery import RecoveryRunner
@@ -232,6 +233,25 @@ def main(argv: list[str] | None = None) -> int:
     migration_cmd.add_argument("--evidence-root", type=Path, default=Path("reports/qualification"))
     migration_cmd.add_argument("--keep-environment", action="store_true")
 
+    rollback_cmd = commands.add_parser("rollback", help="run the supported ROLLBACK strategy: old artifact -> "
+                                                        "upgrade -> controlled failure -> restore pre-upgrade "
+                                                        "database backup + app revert -> integrity + old smoke")
+    rollback_cmd.add_argument("--old-artifact", required=True, type=Path)
+    rollback_cmd.add_argument("--new-artifact", required=True, type=Path)
+    rollback_cmd.add_argument("--fixture-version", default="mesflow-fixture-v1")
+    rollback_cmd.add_argument("--evidence-root", type=Path, default=Path("reports/qualification"))
+    rollback_cmd.add_argument("--keep-environment", action="store_true")
+
+    simulation_cmd = commands.add_parser("long-simulation", help="run a first-class factory simulation profile")
+    simulation_cmd.add_argument("--artifact", required=True, type=Path)
+    simulation_cmd.add_argument("--fixture-version", default="mesflow-fixture-v1")
+    simulation_cmd.add_argument("--evidence-root", type=Path, default=Path("reports/qualification"))
+    simulation_cmd.add_argument("--profile", default="SMOKE", choices=sorted(LONG_SIMULATION_PROFILES))
+    simulation_cmd.add_argument("--accelerated", action="store_true")
+    simulation_cmd.add_argument("--seed", type=int, default=None)
+    simulation_cmd.add_argument("--stop-after-wall-seconds", type=float, default=None)
+    simulation_cmd.add_argument("--keep-environment", action="store_true")
+
     backup_restore_cmd = commands.add_parser("backup-restore", help="run only the backup_restore suite (spec section "
                                                                     "7): real pg_dump from a source sandbox, restored "
                                                                     "into a SEPARATE sandbox, data comparison + "
@@ -289,6 +309,70 @@ def main(argv: list[str] | None = None) -> int:
             final["error"] = str(exc)
             _json(final)
             return 1
+
+    if args.command == "rollback":
+        # ROLLBACK (spec section 8): same UpgradeRunner machinery as
+        # migration, with perform_rollback=True adding the real, currently-
+        # supported rollback phases (pre-upgrade pg_dump restore + old app
+        # revert) after the upgrade completes. The repository has no
+        # authoritative deploy-rollback script promising reverse migrations,
+        # so the runner uses scripts/backup.sh + scripts/restore.sh semantics.
+        manifest, err_code = _safe_inspect_package(args.new_artifact)
+        if err_code is not None:
+            return err_code
+        artifact = service.register_artifact(application_version=str(manifest["version"]),
+                                             git_commit=str(manifest.get("source_commit") or "unknown"), path=args.new_artifact)
+        environment = service.attest_environment(name=f"rollback-{artifact['sha256'][:12]}-{uuid.uuid4().hex[:8]}",
+                                                  kind="QA", target_url="http://qualification.invalid",
+                                                  database_identity="pending-isolated-postgresql", destructive_allowed=True,
+                                                  identity=f"QA:rollback:{artifact['sha256']}:{uuid.uuid4().hex[:8]}")
+        qualification = service.start_run(artifact_id=artifact["id"], environment_id=environment["id"], profile="rollback",
+                                          dataset_version=args.fixture_version, scenario_set_version="rollback",
+                                          run_kind="ROLLBACK")
+        try:
+            result = UpgradeRunner(args.evidence_root).run(qualification["id"], args.old_artifact, args.new_artifact,
+                                                           fixture_version=args.fixture_version, keep_environment=args.keep_environment,
+                                                           perform_rollback=True)
+            final = service.finish_run(qualification["id"])
+            final["suite_result"] = result
+            final["coverage_snapshot"] = coverage_snapshot(qualification["id"])
+            _json(final)
+            return 0 if final["status"] == "PASSED" else 1
+        except Exception as exc:
+            final = service.finish_run(qualification["id"])
+            final["error"] = str(exc)
+            _json(final)
+            return 1
+
+    if args.command == "long-simulation":
+        manifest, err_code = _safe_inspect_package(args.artifact)
+        if err_code is not None:
+            return err_code
+        artifact = service.register_artifact(application_version=str(manifest["version"]),
+                                             git_commit=str(manifest.get("source_commit") or "unknown"), path=args.artifact)
+        environment = service.attest_environment(name=f"long-simulation-{artifact['sha256'][:12]}-{uuid.uuid4().hex[:8]}",
+                                                  kind="QA", target_url="http://qualification.invalid",
+                                                  database_identity="isolated-simulation-postgresql", destructive_allowed=True,
+                                                  identity=f"QA:long-simulation:{artifact['sha256']}:{uuid.uuid4().hex[:8]}")
+        qualification = service.start_run(artifact_id=artifact["id"], environment_id=environment["id"], profile=args.profile,
+                                          dataset_version=args.fixture_version, scenario_set_version="factory-simulation-v1",
+                                          run_kind="LONG_RUNNING_FACTORY_SIMULATION")
+        deployer = ArtifactDeployment(args.evidence_root)
+        deployment = None
+        try:
+            deployment = deployer.deploy(qualification["id"], args.artifact, fixture_version=args.fixture_version)
+            result = LongSimulationRunner(args.evidence_root).run(
+                qualification["id"], deployment, profile=args.profile, seed=args.seed,
+                accelerated=True if args.accelerated else None,
+                stop_after_wall_seconds=args.stop_after_wall_seconds)
+            final = service.finish_run(qualification["id"])
+            final["suite_result"] = result
+            final["coverage_snapshot"] = coverage_snapshot(qualification["id"])
+            _json(final)
+            return 0 if result["status"] == "PASSED" else 1
+        finally:
+            if deployment and not args.keep_environment:
+                deployer.destroy(deployment["namespace"])
 
     if args.command == "backup-restore":
         # BACKUP_RESTORE (spec section 7): BackupRestoreRunner manages its

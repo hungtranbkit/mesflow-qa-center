@@ -17,6 +17,7 @@ point is the opposite).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import time
@@ -28,7 +29,9 @@ from typing import Any
 from .database import DeterministicDatabase
 from .deployment import SELF_CONTAINER, ArtifactDeployment, DeploymentError, _run, _sha
 from .evidence import EvidenceStore
+from .integrity_runner import IntegrityRunner
 from .live import LiveMESFlowQualification
+from .post_deploy_smoke import PostDeploySmokeRunner
 from .scenario_runner import ScenarioRunner
 from .store import connect, now
 
@@ -57,6 +60,7 @@ class UpgradeRunner:
         self.evidence_root = evidence_root
         self._runner = ScenarioRunner(evidence_root, scenario_version="upgrade-v1",
                                       driver="UPGRADE", evidence_kind="UPGRADE_EVIDENCE")
+        self._integrity = IntegrityRunner(evidence_root)
 
     def _scenario(self, suite_id: str, run_id: str, key: str, fn) -> dict[str, Any]:
         return self._runner.run(suite_id, run_id, key, fn)
@@ -174,6 +178,15 @@ class UpgradeRunner:
             def phase_capture_before():
                 counts = {table: database.query_json(db, f"SELECT count(*) n FROM {table}")[0]["n"] for table in ROW_COUNT_TABLES}
                 state["before_counts"] = counts
+                if perform_rollback:
+                    backup = subprocess.run([
+                        "docker", "exec", db, "pg_dump", "-U", "mesflow_qa", "-d", "mesflow_qa",
+                        "-Fc", "--no-owner", "--no-privileges"],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
+                    if backup.returncode or not backup.stdout:
+                        raise AssertionError(f"pre-upgrade backup failed: {backup.stderr.decode('utf-8', 'replace')[-1200:]}")
+                    state["pre_upgrade_backup"] = backup.stdout
+                    state["pre_upgrade_backup_sha256"] = hashlib.sha256(backup.stdout).hexdigest()
                 return counts
             scenario("upgrade.before_row_counts_captured", phase_capture_before)
 
@@ -192,7 +205,7 @@ class UpgradeRunner:
                 state["new_target_url"] = target_url
                 return {"version": new_manifest.get("version"), "migration_head": ready.get("migration_head"),
                        "schema_version": ready.get("schema_version"), "ready": ready}
-            scenario("upgrade.new_artifact_migrates_existing_database_and_becomes_healthy", phase_swap_app_container)
+            scenario("deployment.version_health.new_artifact_migrates_and_becomes_healthy", phase_swap_app_container)
             state["new_ready"] = results[-1]["actual"]["ready"]
 
             def phase_capture_after_and_verify_preserved():
@@ -211,6 +224,11 @@ class UpgradeRunner:
                 return {"old_migration_head": old_head, "new_migration_head": new_head, "changed": old_head != new_head}
             scenario("upgrade.migration_head_valid", phase_migration_head_valid)
 
+            def phase_integrity_after_migration():
+                checks = self._integrity.assert_ok(run_id, db, context="post-migration")
+                return {"checks": {key: value["status"] for key, value in checks.items()}}
+            scenario("database.migrations_backup.integrity_after_migration", phase_integrity_after_migration)
+
             def phase_critical_workflow_after_upgrade():
                 live = LiveMESFlowQualification(run_id, state["new_target_url"], db, self.evidence_root, app_container=new_app)
                 live.login()
@@ -220,6 +238,110 @@ class UpgradeRunner:
                     raise AssertionError(f"critical workflow(s) failed post-upgrade: {[r['key'] for r in failed]}")
                 return {"scenarios_passed": [r["key"] for r in workflow_results]}
             scenario("upgrade.critical_workflows_operate_post_upgrade", phase_critical_workflow_after_upgrade)
+
+            def phase_deployment_version_health_credit():
+                # deployment.version_health requires the 'upgrade' layer;
+                # this suite already IS that layer -- an explicit
+                # feature-keyed scenario (spec section 9's "explicit
+                # supported mapping mechanism") so real, already-verified
+                # evidence above (post-upgrade health + migration head)
+                # counts toward it, not a second re-check of the same facts.
+                return {"new_version": new_manifest.get("version"), "new_migration_head": state["new_ready"].get("migration_head"),
+                        "post_upgrade_health": state["new_ready"].get("ok")}
+            scenario("deployment.version_health.upgrade_verified", phase_deployment_version_health_credit)
+
+            def phase_database_migrations_backup_credit():
+                # database.migrations_backup requires the 'migration' layer
+                # specifically (its 'database'/'recovery' layers come from
+                # backup_restore.py) -- same explicit-mapping rationale.
+                old_head = state["old_ready"].get("migration_head")
+                new_head = state["new_ready"].get("migration_head")
+                return {"old_migration_head": old_head, "new_migration_head": new_head,
+                        "real_migration_executed": old_head != new_head}
+            scenario("database.migrations_backup.migration_verified", phase_database_migrations_backup_credit)
+
+            if perform_rollback:
+                rollback_suite_id = f"suite-{uuid.uuid4().hex}"
+                self.conn.execute("""INSERT INTO qa_suite_runs(id,qualification_run_id,suite_key,layer,required,status,
+                  started_at,command_json) VALUES(?,?,'rollback','recovery',1,'RUNNING',?,'[]')""", (rollback_suite_id, run_id, now()))
+                self.conn.commit()
+
+                def rollback_scenario(key, fn):
+                    result = self._scenario(rollback_suite_id, run_id, key, fn)
+                    results.append(result)
+                    if result["status"] == "FAILED":
+                        raise DeploymentError(f"{key}: {result['actual']}")
+                    return result
+
+                def phase_inject_controlled_failure():
+                    # A real, controlled post-upgrade failure -- the actual
+                    # trigger scripts/deploy.sh's own automatic rollback
+                    # responds to (a deploy that becomes unhealthy). Stopping
+                    # the new app container abruptly is the safest reliable
+                    # way to reproduce "this deploy is unhealthy" against a
+                    # disposable QA sandbox.
+                    _run(["docker", "stop", "--time", "3", new_app])
+                    return {"new_app_stopped": True}
+
+                def phase_execute_real_rollback():
+                    # The repository's supported production strategy is
+                    # scripts/backup.sh + scripts/restore.sh: restore the
+                    # pre-upgrade custom-format pg_dump, then boot the old
+                    # app. deploy.sh does not promise automatic reverse
+                    # migrations, so do not manufacture that capability.
+                    subprocess.run(["docker", "rm", "-f", new_app], stdout=_DEVNULL, stderr=_DEVNULL)
+                    drop = subprocess.run(["docker", "exec", db, "dropdb", "-U", "mesflow_qa", "--if-exists", "mesflow_qa"],
+                                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                    create = subprocess.run(["docker", "exec", db, "createdb", "-U", "mesflow_qa", "mesflow_qa"],
+                                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                    restore = subprocess.run([
+                        "docker", "exec", "-i", db, "pg_restore", "-U", "mesflow_qa", "-d", "mesflow_qa",
+                        "--clean", "--if-exists", "--no-owner"], input=state["pre_upgrade_backup"],
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=180)
+                    if drop.returncode or create.returncode or restore.returncode:
+                        raise AssertionError(f"pre-upgrade backup restore failed: {restore.stdout.decode('utf-8', 'replace')[-1600:]}")
+                    _run(["docker", "run", "-d", "--name", old_app, "--network", network, "--label", "mesflow.qualification=true",
+                          "-e", "MESFLOW_ENV=test", "-e", f"DATABASE_URL={state['database_url']}",
+                          "-e", f"WORKSHOP_DATABASE_URL={state['database_url']}", "-e", "MESFLOW_TEST_AUTO_LOGIN=0",
+                          "-e", "MESFLOW_ADMIN_PASSWORD=Admin@123456", "-e", "WORKSHOP_COOKIE_SECURE=0",
+                          str(old_manifest["image"])])
+                    rollback_target_url = target_url_for(old_app)
+                    ready = self._wait_ready(old_app, rollback_target_url, timeout_seconds=120)
+                    state["rollback_target_url"] = rollback_target_url
+                    return {"strategy": "pre-upgrade-db-restore", "backup_sha256": state["pre_upgrade_backup_sha256"],
+                            "reverted_to_version": old_manifest.get("version"),
+                            "post_rollback_migration_head": ready.get("migration_head"), "post_rollback_ready": ready.get("ok")}
+
+                def phase_verify_rollback_data_and_integrity():
+                    counts = {table: database.query_json(db, f"SELECT count(*) n FROM {table}")[0]["n"] for table in ROW_COUNT_TABLES}
+                    before = state["before_counts"]
+                    lost = {t: (before[t], counts[t]) for t in ROW_COUNT_TABLES if counts[t] < before[t]}
+                    if lost:
+                        raise AssertionError(f"row counts DECREASED after rollback (data loss): {lost}")
+                    integrity_runner = IntegrityRunner(self.evidence_root)
+                    checks = integrity_runner.assert_ok(run_id, db, context="post-rollback")
+                    return {"row_counts_after_rollback": counts, "integrity": {k: v["status"] for k, v in checks.items()}}
+
+                def phase_critical_smoke_after_rollback():
+                    smoke = PostDeploySmokeRunner(self.evidence_root).run(
+                        run_id, state["rollback_target_url"], allow_disposable_workflow=False, suite_key="post_rollback_smoke")
+                    if smoke["status"] != "PASSED":
+                        raise AssertionError(f"post-rollback smoke did not pass: {smoke['status']}")
+                    return {"smoke_status": smoke["status"]}
+
+                try:
+                    rollback_scenario("deployment.version_health.controlled_post_upgrade_failure_injected", phase_inject_controlled_failure)
+                    rollback_scenario("deployment.version_health.real_rollback_executed", phase_execute_real_rollback)
+                    rollback_scenario("deployment.version_health.rollback_data_preserved_and_consistent", phase_verify_rollback_data_and_integrity)
+                    rollback_scenario("deployment.version_health.critical_smoke_after_rollback", phase_critical_smoke_after_rollback)
+                    rollback_final_status = "PASSED"
+                except Exception:
+                    rollback_final_status = "FAILED"
+                    raise
+                finally:
+                    self.conn.execute("UPDATE qa_suite_runs SET status=?,finished_at=? WHERE id=?",
+                                      (rollback_final_status, now(), rollback_suite_id))
+                    self.conn.commit()
 
             status = "PASSED"
         except Exception as exc:

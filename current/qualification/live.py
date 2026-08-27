@@ -142,6 +142,7 @@ class LiveMESFlowQualification:
             ("health.jobs_notifications.api_contract", "/api/system/health", {"ok"}),
             ("kiosk.web_legacy_v2.api_contract", "/api/kiosk-web/health", {"ok"}),
             ("imports.exports.qr.api_contract", "/api/qr-labels", {"ok"}),
+            ("deployment.version_health.api_contract", "/api/system/ready", {"ok", "migration_head", "version"}),
         ]
         values = [result]
         for feature_key, path, fields in feature_contracts:
@@ -355,6 +356,28 @@ class LiveMESFlowQualification:
             return {"content_type": content_type, "body_bytes": len(response.content)}
         results.append(self._scenario(suite, "imports.exports.qr.workflow", "API", imports_exports_qr_workflow))
 
+        def exceptions_reconciliation_workflow():
+            # A real multi-step business flow through the exceptions API
+            # (list -> detail-for-nonexistent-is-404 -> the reconciliation
+            # job -- the same real `python -m mesflow.cli reconcile-
+            # exceptions` a production cron entry runs, via self.app_container
+            # -- actually runs and the list contract stays well-formed
+            # afterward). Its api/integration/recovery layers are covered
+            # by this suite's own api_contracts()/integration() and by
+            # scheduler_reliability.py; this is the 'workflow' layer proof.
+            before = self.request("GET", "/api/exceptions").json()
+            assert before.get("ok") and "items" in before, before
+            missing = self.request("GET", "/api/exceptions/999999999")
+            assert missing.status_code == 404
+            if self.app_container:
+                proc = self.exec_in_app("python", "-m", "mesflow.cli", "reconcile-exceptions", timeout=60)
+                assert proc.returncode == 0, proc.stdout.decode("utf-8", "replace")[-1200:]
+            after = self.request("GET", "/api/exceptions").json()
+            assert after.get("ok") and "items" in after, after
+            return {"before_count": len(before["items"]), "after_count": len(after["items"]),
+                    "reconciliation_ran": bool(self.app_container)}
+        results.append(self._scenario(suite, "exceptions.reconciliation.workflow", "API", exceptions_reconciliation_workflow))
+
         self._finish_suite(suite)
         return results
 
@@ -516,6 +539,62 @@ class LiveMESFlowQualification:
                 f"QR label catalogue returned {len(labels['items'])} employees, DB has {employee_count}"
             return {"qr_label_count": len(labels["items"]), "employee_count": employee_count}
         values.append(self._scenario(suite, "imports.exports.qr.integration", "API", imports_exports_qr_integration))
+
+        def sessions_lifecycle_integration():
+            # A real, disposable start->finish session (own operation, own
+            # employee -- never the exact-value-asserted QA-PO-RUN-OP/
+            # QA-PO-LATE-OP other scenarios in this file depend on), cross-
+            # checked against the DB directly -- the 'integration' layer
+            # proof this feature was missing (its api/workflow/unit layers
+            # are already covered elsewhere in this same suite set).
+            base = self.database.query_json(self.db_container, "SELECT part_id,production_order_id FROM operations WHERE code='QA-PO-LATE-OP'")[0]
+            op_code = f"QA-INTEG-SESSLC-{uuid.uuid4().hex[:8]}"
+            self.database._psql(self.db_container, f"""
+                INSERT INTO operations(production_order_id,part_id,code,name,done_qty,defect_qty,rework_qty,status,sort_order,qr)
+                VALUES({base['production_order_id']},{base['part_id']},'{op_code}','Sessions Lifecycle Integration Op',0,0,0,'IN_PROGRESS',5,'WF|OP|{op_code}');
+            """)
+            operation_id = self.database.query_json(self.db_container, f"SELECT id FROM operations WHERE code='{op_code}'")[0]["id"]
+            employee_id = self.database.query_json(self.db_container, "SELECT id FROM employees WHERE employee_no='QA-EMP-002'")[0]["id"]
+            request_id = f"QA-INTEG-SESSLC-{uuid.uuid4().hex[:8]}"
+            start = self.request("POST", "/api/work-sessions/start", json={"employee_id": employee_id, "operation_id": operation_id, "request_id": request_id})
+            assert start.status_code == 201, start.text
+            sid = start.json()["session"]["id"]
+            finish = self.request("POST", f"/api/work-sessions/{sid}/finish", json={"good_qty": 1, "request_id": request_id + "-FINISH"})
+            assert finish.status_code == 200
+            row = self.database.query_json(self.db_container, f"SELECT status,good_qty FROM work_sessions WHERE id={sid}")[0]
+            assert row["status"] == "CLOSED" and row["good_qty"] == 1, row
+            return {"session_id": sid, "backend_row": row}
+        values.append(self._scenario(suite, "sessions.lifecycle.integration", "API", sessions_lifecycle_integration))
+
+        def sessions_group_supervisor_integration():
+            # Two DIFFERENT employees, two DISTINCT sessions, on the SAME
+            # disposable operation -- DB-level cross-check that both are
+            # tracked independently (own quantity_movements rows), not
+            # merged/overwritten -- the 'integration' layer proof this
+            # feature was missing.
+            base = self.database.query_json(self.db_container, "SELECT part_id,production_order_id FROM operations WHERE code='QA-PO-LATE-OP'")[0]
+            op_code = f"QA-INTEG-GROUPSUP-{uuid.uuid4().hex[:8]}"
+            self.database._psql(self.db_container, f"""
+                INSERT INTO operations(production_order_id,part_id,code,name,done_qty,defect_qty,rework_qty,status,sort_order,qr)
+                VALUES({base['production_order_id']},{base['part_id']},'{op_code}','Group Supervisor Integration Op',0,0,0,'IN_PROGRESS',6,'WF|OP|{op_code}');
+            """)
+            operation_id = self.database.query_json(self.db_container, f"SELECT id FROM operations WHERE code='{op_code}'")[0]["id"]
+            ids = self._ids()
+            session_ids = []
+            for employee, good_qty in ((ids["employee1"], 1), (ids["employee2"], 2)):
+                request_id = f"QA-INTEG-GROUPSUP-{uuid.uuid4().hex[:8]}"
+                start = self.request("POST", "/api/work-sessions/start", json={"employee_id": employee, "operation_id": operation_id, "request_id": request_id})
+                assert start.status_code == 201, start.text
+                sid = start.json()["session"]["id"]
+                finish = self.request("POST", f"/api/work-sessions/{sid}/finish", json={"good_qty": good_qty, "request_id": request_id + "-FINISH"})
+                assert finish.status_code == 200
+                session_ids.append(sid)
+            movements = self.database.query_json(self.db_container,
+                f"SELECT session_id,delta FROM quantity_movements WHERE session_id IN ({','.join(str(s) for s in session_ids)}) ORDER BY session_id")
+            distinct_sessions = {row["session_id"] for row in movements}
+            assert distinct_sessions == set(session_ids), f"expected independent movement rows for both sessions: {movements}"
+            return {"session_ids": session_ids, "movements": movements}
+        values.append(self._scenario(suite, "sessions.group_supervisor.integration", "API", sessions_group_supervisor_integration))
 
         self._finish_suite(suite)
         return values

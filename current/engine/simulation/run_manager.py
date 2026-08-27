@@ -31,7 +31,14 @@ DURATION_SECONDS: dict[str, float | None] = {
     "8_HOURS": 8 * 3600, "24_HOURS": 24 * 3600, "3_DAYS": 3 * 86400, "7_DAYS": 7 * 86400,
     "CONTINUOUS": None,
 }
-SPEEDS: dict[str, float] = {"REAL_TIME": 1.0, "2X": 2.0, "5X": 5.0, "10X": 10.0}
+SPEEDS: dict[str, float] = {
+    "REAL_TIME": 1.0, "2X": 2.0, "5X": 5.0, "10X": 10.0,
+    # Qualification-only accelerated profiles still preserve event density:
+    # SimClock compresses pacing, while actors schedule the same simulated
+    # workday. They keep release qualification bounded without claiming a
+    # real-time 8h/24h execution occurred.
+    "100X": 100.0, "1000X": 1000.0,
+}
 
 # Item 86: safety caps checked every checkpoint -- WARN at 70%, refuse to
 # schedule new business actions past 100% (item 41: "uncontrollable data

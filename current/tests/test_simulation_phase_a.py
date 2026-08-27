@@ -12,6 +12,8 @@ import pytest
 from engine.simulation import distributions
 from engine.simulation.clock import SimClock
 from engine.simulation.scheduler import Scheduler, run_until_empty_or_stopped
+from engine.simulation.run_manager import DURATION_SECONDS, SPEEDS
+from qualification.long_simulation import PROFILES as QUALIFICATION_PROFILES
 
 
 # --------------------------------------------------------------------------
@@ -94,6 +96,19 @@ def test_clock_resume_continues_from_persisted_point_not_a_fresh_origin():
     # Immediately after resume, simulated time must be very close to the
     # persisted value (paused during any real gap, never rewound/skipped).
     assert abs(resumed.now() - snap["origin_sim"]) < 1.0
+
+
+def test_full_long_running_profiles_are_explicit_and_policy_bounded():
+    assert {"SMOKE", "RELEASE", "NIGHTLY", "EXTENDED_24H", "EXTENDED_3D", "EXTENDED_7D", "CONTINUOUS"} \
+        <= set(QUALIFICATION_PROFILES)
+    assert DURATION_SECONDS["8_HOURS"] == 8 * 3600
+    assert DURATION_SECONDS["24_HOURS"] == 24 * 3600
+    assert DURATION_SECONDS["3_DAYS"] == 3 * 86400
+    assert DURATION_SECONDS["7_DAYS"] == 7 * 86400
+    assert DURATION_SECONDS["CONTINUOUS"] is None
+    assert QUALIFICATION_PROFILES["RELEASE"]["speed"] == "1000X"
+    assert QUALIFICATION_PROFILES["NIGHTLY"]["speed"] == "REAL_TIME"
+    assert SPEEDS["1000X"] == 1000.0
 
 
 # --------------------------------------------------------------------------

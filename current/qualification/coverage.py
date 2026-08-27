@@ -45,6 +45,26 @@ SUITE_LAYER_CREDITS: dict[str, dict[str, Any]] = {
         "feature_keys": ["auth.sessions_roles", "sessions.lifecycle", "calendar.shifts", "quality.quantities_rework",
                          "scheduling.dependencies_wip"],
     },
+    # Immutable artifact/version checks are static qualification evidence;
+    # the suite predates the registry's layer name and stores layer='build'.
+    "build_integrity": {
+        "layer": "static",
+        "feature_keys": ["deployment.version_health"],
+    },
+    # RecoveryRunner proves the deployed runtime returns healthy after real
+    # app/DB/network interruptions. Its historical scenario keys are
+    # recovery.*; retain those replay IDs while crediting the audited feature.
+    "recovery": {
+        "layer": "recovery",
+        "feature_keys": ["deployment.version_health"],
+    },
+    # UpgradeRunner's own suite layer is 'upgrade' so deployment scenarios
+    # receive that layer normally. Its real old-DB -> current-migration flow
+    # also satisfies the database feature's distinct 'migration' policy layer.
+    "upgrade": {
+        "layer": "migration",
+        "feature_keys": ["database.migrations_backup"],
+    },
 }
 
 

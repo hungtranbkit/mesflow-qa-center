@@ -86,6 +86,19 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
     <div class="panel-head"><div><h2>Qualification history</h2><p>Mỗi dòng giữ nguyên artifact và environment identity.</p></div></div>
     <div class="run-list" id="qualificationRuns"><p class="empty-cell">Chưa có qualification run.</p></div>
   </section>
+
+  <section class="panel sandbox-panel">
+    <div class="panel-head">
+      <div><h2>Sandboxes</h2><p>Vòng đời sandbox thật (Docker) của qualification run này. Mở ứng dụng thật, không phải screenshot.</p></div>
+      <button id="refreshSandboxes" type="button">Làm mới sandboxes</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Sandbox</th><th>Version / SHA</th><th>Loại</th><th>Trạng thái</th><th>Health</th><th>Hành động</th></tr></thead>
+        <tbody id="sandboxRows"><tr><td colspan="6" class="empty-cell">Chưa có sandbox nào cho run này.</td></tr></tbody>
+      </table>
+    </div>
+  </section>
 </main>
 <div id="qualificationError" class="error-banner" role="alert" hidden></div>
 <script src="/static/qualifications.js?v={{ app_version }}"></script>
