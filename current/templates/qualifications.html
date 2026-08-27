@@ -112,6 +112,42 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
     </div>
   </section>
 
+  <section class="panel kiosk-panel" id="kioskPanel">
+    <div class="panel-head">
+      <div><h2>Kiosk Certification</h2><p>Xác nhận hành vi kiosk thật qua giao thức kiosk v2 thật — không phải mock.</p></div>
+      <span id="kioskProfileLabel" class="status status-neutral">—</span>
+    </div>
+    <div class="kiosk-summary" id="kioskSummary">
+      <p>Phần mềm kiosk ổn định? <strong id="kioskQSoftware">—</strong></p>
+      <p>Offline / kết nối lại ổn định? <strong id="kioskQOffline">—</strong></p>
+      <p>Đã kiểm ESP32 thật (HIL)? <strong id="kioskQHil">—</strong></p>
+      <p>Đã kiểm OTA? <strong id="kioskQOta">—</strong></p>
+    </div>
+    <div class="kiosk-actions" id="kioskActions">
+      <button type="button" data-kiosk-run="QUICK">Run Quick Test</button>
+      <button type="button" data-kiosk-run="STANDARD">Run Full Software Kiosk Test</button>
+      <button type="button" data-kiosk-run="RELIABILITY">Run Network/Reliability Test</button>
+      <button type="button" data-kiosk-run="STRESS">Run Stress Test</button>
+      <button type="button" data-kiosk-run="HIL_ONLY">Run Physical ESP HIL</button>
+    </div>
+    <p class="table-scroll-cue" id="kioskActionHint">Chọn một run Kiosk Certification (cột trái) để bật các nút chạy lại theo profile.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Nhóm</th><th>Đạt</th><th>Không đạt</th><th>Blocked</th><th>Tổng</th></tr></thead>
+        <tbody id="kioskCategoryRows"><tr><td colspan="5" class="empty-cell">Chưa có kết quả kiosk cho run này.</td></tr></tbody>
+      </table>
+    </div>
+    <details class="kiosk-detail-wrap">
+      <summary>Chi tiết từng testcase</summary>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Testcase</th><th>Tên</th><th>Kết quả</th><th>Bắt đầu</th><th>Điểm khác biệt đầu tiên</th></tr></thead>
+          <tbody id="kioskTestcaseRows"><tr><td colspan="5" class="empty-cell">—</td></tr></tbody>
+        </table>
+      </div>
+    </details>
+  </section>
+
   <section class="panel policy-panel">
     <div class="panel-head"><div><h2>Release policy tiers</h2><p>Cùng một artifact SHA256, đánh giá dưới FAST / STRONG / EXTENDED.</p></div></div>
     <div class="table-wrap">
