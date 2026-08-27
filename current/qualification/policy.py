@@ -28,13 +28,18 @@ DEFAULT_POLICY = {
 # never a silent edit of v1's required_suites.
 FAST_POLICY = {
     "key": "MESFLOW_FAST_V1",
-    "version": "1.0.0",
+    # 1.0.0 -> 1.1.0: Kiosk Certification phase adds "basic emulator smoke"
+    # to FAST per spec section 30. Safe to bump in place (not a new V2 key
+    # like STRONG's precedent below) -- evaluate_tier() is read-only and
+    # never persists a qa_certifications row, so there is no historical
+    # certification whose meaning this could retroactively change.
+    "version": "1.1.0",
     # Developer/local iteration: fast, no real Docker sandbox chaos/burst/
     # migration suites, no HIL. Still a real bar (build integrity, unit,
     # full API contract, integration, MES workflows, one UI smoke pass,
-    # invariants) -- not a rubber stamp.
+    # kiosk emulator smoke, invariants) -- not a rubber stamp.
     "required_suites": ["build_integrity", "critical_unit", "api_contract", "integration",
-                        "mes_workflows", "ui_critical"],
+                        "mes_workflows", "ui_critical", "kiosk_emulator"],
     "block_flaky_layers": ["unit", "api", "integration", "workflow"],
     "max_invariant_failures": 0,
     "require_hil_when_configured": False,

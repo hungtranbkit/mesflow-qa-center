@@ -113,7 +113,14 @@ class KioskEmulatorRunner:
         return self._runner.run(suite_id, run_id, key, fn)
 
     def run(self, run_id: str, target_url: str, db_container: str, *,
-            admin_password: str = "Admin@123456") -> dict[str, Any]:
+            admin_password: str = "Admin@123456", profile: str | None = None) -> dict[str, Any]:
+        """profile: an optional kiosk_registry.PROFILES name -- when given,
+        only scenarios whose scenario_key is registered under one of that
+        profile's testcase_ids actually run; everything else is silently
+        skipped (not recorded as failed/blocked -- it simply wasn't
+        selected). None (the default) runs every scenario, preserving the
+        exact pre-Kiosk-Certification-phase behavior for every existing
+        caller (cli.py's run-artifact, replay-suite, etc.)."""
         target = target_url.rstrip("/")
         suite_id = f"suite-{uuid.uuid4().hex}"
         self.conn.execute("""INSERT INTO qa_suite_runs(id,qualification_run_id,suite_key,layer,required,status,
@@ -122,7 +129,18 @@ class KioskEmulatorRunner:
         results: list[dict[str, Any]] = []
         database = DeterministicDatabase(self.evidence_root)
 
+        selected_keys: set[str] | None = None
+        if profile:
+            from .kiosk_registry import PROFILES, REGISTRY
+            spec = PROFILES.get(profile.upper())
+            if spec is None:
+                raise ValueError(f"unknown kiosk profile {profile!r}: expected one of {sorted(PROFILES)}")
+            selected_keys = {REGISTRY[tid].scenario_key for tid in spec["testcase_ids"]
+                             if REGISTRY[tid].applicable_driver == "KIOSK_EMULATOR"}
+
         def scenario(key, fn):
+            if selected_keys is not None and key not in selected_keys:
+                return None
             result = self._scenario(suite_id, run_id, key, fn)
             results.append(result)
             return result
@@ -408,6 +426,253 @@ class KioskEmulatorRunner:
             return {"kiosk_a_device": client_a.device_id, "kiosk_b_device": client_b.device_id,
                     "done_qty_before": before, "done_qty_after": after}
         scenario("sessions.group_supervisor.kiosk_multiple_kiosks_same_operation", group_supervisor_multiple_kiosks)
+
+        # ---- Kiosk Certification phase: new coverage (qualification/kiosk_registry.py KC-014..KC-023) ----
+
+        def malformed_qr_rejected():
+            # Every variant must be rejected without mutating anything, and
+            # a valid scan afterward must still work -- proves the parser
+            # never gets stuck on garbage input (kiosk_v2._parse_scan
+            # returns (None,None) for anything not "WF|X|...", which the
+            # SCAN handler turns into STATE_INVALID_TRANSITION at WAIT_EMPLOYEE).
+            client = KioskV2Client(self.http, target, f"qa-kiosk-{uuid.uuid4().hex[:8]}")
+            client.bootstrap()
+            variants = ["", "   ", "not-a-qr-code", "WF", "WF|", "WF|EMP", "x" * 4000, "WF|EMP|" + ("y" * 2000)]
+            rejected = []
+            for raw in variants:
+                status, resp = client.scan(raw)
+                if status != "PASSED" or resp.get("accepted") is not False:
+                    raise AssertionError(f"malformed QR {raw[:40]!r} was not rejected: {resp}")
+                if resp["state"]["name"] != "WAIT_EMPLOYEE":
+                    raise AssertionError(f"malformed QR {raw[:40]!r} advanced device state: {resp}")
+                rejected.append(raw[:20])
+            status, resp = client.scan(emp1)
+            if status != "PASSED" or not resp.get("accepted"):
+                raise AssertionError(f"valid scan after malformed QR sequence still failed: {resp}")
+            return {"variants_rejected": len(rejected), "recovered": True}
+        scenario("sessions.lifecycle.kiosk_malformed_qr_rejected", malformed_qr_rejected)
+
+        def employee_qr_as_operation_rejected():
+            client = KioskV2Client(self.http, target, f"qa-kiosk-{uuid.uuid4().hex[:8]}")
+            client.bootstrap()
+            client.scan(emp1)  # -> WAIT_OPERATION
+            status, resp = client.scan(emp2)  # employee QR where an operation QR is expected
+            if resp.get("accepted") is not False or resp["error"]["code"] != "STATE_INVALID_TRANSITION":
+                raise AssertionError(f"employee QR scanned as operation was not rejected correctly: {resp}")
+            if resp["state"]["name"] != "WAIT_OPERATION":
+                raise AssertionError(f"device left WAIT_OPERATION despite a rejected scan: {resp}")
+            status, resp = client.scan(op_run)  # a real operation scan must still work afterward
+            if status != "PASSED" or not resp.get("accepted"):
+                raise AssertionError(f"valid operation scan after the rejected one still failed: {resp}")
+            client.scan(emp1); client.quantity(good=0)  # close to avoid leaking an OPEN session
+            return {"error_code": "STATE_INVALID_TRANSITION"}
+        scenario("sessions.lifecycle.kiosk_employee_qr_as_operation_rejected", employee_qr_as_operation_rejected)
+
+        def operation_before_employee_rejected():
+            client = KioskV2Client(self.http, target, f"qa-kiosk-{uuid.uuid4().hex[:8]}")
+            client.bootstrap()
+            status, resp = client.scan(op_run)
+            if resp.get("accepted") is not False or resp["error"]["code"] != "STATE_INVALID_TRANSITION":
+                raise AssertionError(f"operation scanned before employee was not rejected: {resp}")
+            if resp["state"]["name"] != "WAIT_EMPLOYEE":
+                raise AssertionError(f"device state advanced past WAIT_EMPLOYEE despite rejection: {resp}")
+            return {"error_code": "STATE_INVALID_TRANSITION"}
+        scenario("sessions.lifecycle.kiosk_operation_before_employee_rejected", operation_before_employee_rejected)
+
+        def duplicate_operation_scan_single_session():
+            employee = fresh_employee("DUPOP")
+            client = KioskV2Client(self.http, target, f"qa-kiosk-{uuid.uuid4().hex[:8]}")
+            client.bootstrap()
+            client.scan(employee)
+            r1 = client.scan(op_run)[1]
+            if r1["state"]["name"] != "SESSION_ACTIVE":
+                raise AssertionError(f"first operation scan did not start a session: {r1}")
+            # SESSION_ACTIVE only accepts an EMPLOYEE re-scan (to request
+            # finish) -- scanning the SAME operation code again here is an
+            # operation-kind QR where an employee-kind is expected, so it
+            # must be rejected the same way, never opening a second session.
+            status, r2 = client.scan(op_run)
+            if r2.get("accepted") is not False or r2["error"]["code"] != "STATE_INVALID_TRANSITION":
+                raise AssertionError(f"duplicate operation scan while a session is active was not rejected: {r2}")
+            open_count = database.query_json(db_container,
+                f"SELECT count(*) n FROM work_sessions WHERE employee_id=(SELECT id FROM employees WHERE qr='{employee}') AND status='OPEN'")[0]["n"]
+            if open_count != 1:
+                raise AssertionError(f"expected exactly 1 OPEN session after duplicate OP scan, found {open_count}")
+            client.scan(employee); client.quantity(good=1)
+            return {"open_sessions_after_duplicate_scan": open_count}
+        scenario("sessions.lifecycle.kiosk_duplicate_operation_scan_single_session", duplicate_operation_scan_single_session)
+
+        def negative_quantity_rejected():
+            employee = fresh_employee("NEGQ")
+            client = KioskV2Client(self.http, target, f"qa-kiosk-{uuid.uuid4().hex[:8]}")
+            client.bootstrap()
+            client.scan(employee)
+            r1 = client.scan(op_run)[1]
+            session_id = r1["view"]["session_id"].removeprefix("S-")
+            client.scan(employee)  # -> QUANTITY_INPUT
+            status, resp = client.send("QUANTITY_SUBMITTED", {"quantity_good": -5, "quantity_defect": 0, "quantity_rework": 0})
+            if resp.get("accepted") is not False or resp["error"]["code"] != "QUANTITY_INVALID":
+                raise AssertionError(f"negative quantity was not rejected as QUANTITY_INVALID: {resp}")
+            row = database.query_json(db_container, f"SELECT status FROM work_sessions WHERE id={session_id}")[0]
+            if row["status"] != "OPEN":
+                raise AssertionError(f"session was closed despite a rejected negative-quantity submit: {row}")
+            # Close properly so this scenario doesn't leak an OPEN session.
+            client.quantity(good=1, defect=0, rework=0)
+            return {"error_code": "QUANTITY_INVALID"}
+        scenario("quality.quantities_rework.kiosk_negative_quantity_rejected", negative_quantity_rejected)
+
+        def non_integer_quantity_rejected():
+            employee = fresh_employee("NANQ")
+            client = KioskV2Client(self.http, target, f"qa-kiosk-{uuid.uuid4().hex[:8]}")
+            client.bootstrap()
+            client.scan(employee)
+            client.scan(op_run)
+            client.scan(employee)  # -> QUANTITY_INPUT
+            status, resp = client.send("QUANTITY_SUBMITTED", {"quantity_good": "abc", "quantity_defect": 0, "quantity_rework": 0})
+            if resp.get("accepted") is not False or resp["error"]["code"] != "QUANTITY_INVALID":
+                raise AssertionError(f"non-integer quantity was not rejected as QUANTITY_INVALID: {resp}")
+            client.quantity(good=1, defect=0, rework=0)
+            return {"error_code": "QUANTITY_INVALID"}
+        scenario("quality.quantities_rework.kiosk_non_integer_quantity_rejected", non_integer_quantity_rejected)
+
+        def response_lost_after_commit_idempotent():
+            # Spec section 11's explicitly called-out case: the server
+            # commits the quantity submit, but the CLIENT never sees the
+            # response (dropped connection). A real device retries under
+            # the SAME event_id -- the kiosk v2 idempotency store must
+            # return the cached response rather than finishing the session
+            # a second time. Mechanically: send once (models "server
+            # committed"), then resend the byte-identical envelope (models
+            # "client never saw the ack and retried") -- the request/
+            # response pair the client actually observes is indistinguishable
+            # from a real dropped-response retry.
+            employee = fresh_employee("LOSTACK")
+            client = KioskV2Client(self.http, target, f"qa-kiosk-{uuid.uuid4().hex[:8]}")
+            client.bootstrap()
+            client.scan(employee)
+            r1 = client.scan(op_run)[1]
+            session_id = r1["view"]["session_id"].removeprefix("S-")
+            client.scan(employee)
+            fixed_id = f"{client.device_id}-LOST-ACK"
+            body = client._envelope("QUANTITY_SUBMITTED", {"quantity_good": 7, "quantity_defect": 0, "quantity_rework": 0}, fixed_id)
+            status1, first = client._post(body)  # models: server commits
+            status2, retry = client._post(body)  # models: client retries after perceiving the response as lost
+            if status1 != "PASSED" or not first.get("accepted"):
+                raise AssertionError(f"initial commit was not accepted: {first}")
+            if first != retry:
+                raise AssertionError(f"retry-after-lost-response returned a different result than the real commit: {first} vs {retry}")
+            movements = database.query_json(db_container,
+                f"SELECT count(*) n FROM quantity_movements WHERE session_id={session_id}")[0]["n"]
+            if movements != 1:
+                raise AssertionError(f"expected exactly 1 quantity_movements row after retry, found {movements} -- double count")
+            return {"session_id": session_id, "movement_count": movements}
+        scenario("kiosk.offline_recovery.response_lost_after_commit_idempotent", response_lost_after_commit_idempotent)
+
+        def network_drop_per_phase():
+            # Section 10: drop network at several real workflow phases, then
+            # restore it and verify convergence -- no duplicate session, no
+            # lost quantity. Three phases chosen for a genuinely distinct,
+            # real assertion each (not 10 mechanically-copied variants):
+            # before employee validation, before session-start (operation
+            # scan), before the finish/quantity commit.
+            unreachable = "http://127.0.0.1:1"
+            results = {}
+
+            # Phase: employee validation
+            employee = fresh_employee("NETDROP1")
+            client = KioskV2Client(self.http, unreachable, f"qa-kiosk-{uuid.uuid4().hex[:8]}")
+            try:
+                client.bootstrap()
+                raise AssertionError("bootstrap unexpectedly succeeded against an unreachable target")
+            except requests.RequestException:
+                pass
+            client.target = target
+            client.bootstrap()
+            status, resp = client.scan(employee)
+            if status != "PASSED" or not resp.get("accepted"):
+                raise AssertionError(f"employee scan after network restore failed: {resp}")
+            results["employee_phase_recovered"] = True
+
+            # Phase: session-start (operation scan)
+            client2 = KioskV2Client(self.http, target, f"qa-kiosk-{uuid.uuid4().hex[:8]}")
+            client2.bootstrap()
+            client2.scan(employee)  # same employee, already at WAIT_OPERATION
+            client2.target = unreachable
+            try:
+                client2.scan(op_run)
+                raise AssertionError("operation scan unexpectedly succeeded against an unreachable target")
+            except requests.RequestException:
+                pass
+            client2.target = target
+            status, resp = client2.scan(op_run)
+            if status != "PASSED" or resp["state"]["name"] != "SESSION_ACTIVE":
+                raise AssertionError(f"operation scan after network restore did not start a session: {resp}")
+            session_id = resp["view"]["session_id"].removeprefix("S-")
+            open_count = database.query_json(db_container, f"SELECT count(*) n FROM work_sessions WHERE id={session_id}")[0]["n"]
+            if open_count != 1:
+                raise AssertionError(f"expected exactly 1 session row after network-drop-then-retry session start, found {open_count}")
+            results["session_start_phase_recovered"] = True
+
+            # Phase: finish/quantity commit
+            client2.scan(employee)  # -> QUANTITY_INPUT
+            client2.target = unreachable
+            try:
+                client2.quantity(good=3)
+                raise AssertionError("quantity submit unexpectedly succeeded against an unreachable target")
+            except requests.RequestException:
+                pass
+            client2.target = target
+            status, resp = client2.quantity(good=3)
+            if status != "PASSED" or resp["state"]["name"] != "WAIT_EMPLOYEE":
+                raise AssertionError(f"quantity submit after network restore did not close the session: {resp}")
+            row = database.query_json(db_container, f"SELECT status,good_qty FROM work_sessions WHERE id={session_id}")[0]
+            if row["status"] != "CLOSED" or row["good_qty"] != 3:
+                raise AssertionError(f"session state after network-drop-then-retry finish disagrees with submitted quantity: {row}")
+            results["finish_phase_recovered"] = True
+            return results
+        scenario("kiosk.offline_recovery.network_drop_per_phase", network_drop_per_phase)
+
+        def offline_queue_many_events():
+            employee = fresh_employee("QMANY")
+            client = KioskV2Client(self.http, target, f"qa-kiosk-{uuid.uuid4().hex[:8]}")
+            client.bootstrap()
+            client.go_offline()
+            client.scan(employee)
+            client.scan(op_run)
+            client.scan(employee)
+            client.quantity(good=4, defect=1, rework=0)
+            if len(client.queue) != 4:
+                raise AssertionError(f"expected 4 queued events while offline, found {len(client.queue)}")
+            queued_event_ids = [e["event"]["event_id"] for e in client.queue]
+            replay = client.reconnect_and_replay()
+            if len(replay) != 4 or any(status != "PASSED" for status, _ in replay):
+                raise AssertionError(f"not every queued event replayed successfully in order: {replay}")
+            final_state = replay[-1][1]["state"]["name"]
+            if final_state != "WAIT_EMPLOYEE":
+                raise AssertionError(f"queue replay did not converge to a closed session: {final_state}")
+            row = database.query_json(db_container,
+                f"SELECT status,good_qty,defect_qty FROM work_sessions WHERE employee_id=(SELECT id FROM employees WHERE qr='{employee}') ORDER BY id DESC LIMIT 1")[0]
+            if row["status"] != "CLOSED" or row["good_qty"] != 4 or row["defect_qty"] != 1:
+                raise AssertionError(f"backend state after 4-event offline queue replay disagrees with what was queued: {row}")
+            return {"queued_event_ids": queued_event_ids, "replayed_count": len(replay), "final_state": final_state}
+        scenario("kiosk.offline_recovery.offline_queue_many_events", offline_queue_many_events)
+
+        def offline_queue_duplicate_replay_protected():
+            client = KioskV2Client(self.http, target, f"qa-kiosk-{uuid.uuid4().hex[:8]}")
+            client.bootstrap()
+            client.go_offline()
+            client.scan(emp1)
+            queued_body = client.queue[0]
+            client.online = True
+            client.queue = []
+            status1, first = client._post(queued_body)
+            status2, second = client._post(queued_body)  # replaying the exact same queued event a second time
+            if status1 != "PASSED" or not first.get("accepted"):
+                raise AssertionError(f"first replay of the queued event was not accepted: {first}")
+            if first != second:
+                raise AssertionError(f"replaying the same queued event twice returned different results (duplicate processed): {first} vs {second}")
+            return {"replay_idempotent": True}
+        scenario("kiosk.offline_recovery.offline_queue_duplicate_replay_protected", offline_queue_duplicate_replay_protected)
 
         status = "FAILED" if any(r["status"] == "FAILED" for r in results) else "PASSED"
         self.conn.execute("UPDATE qa_suite_runs SET status=?,finished_at=? WHERE id=?", (status, now(), suite_id))
