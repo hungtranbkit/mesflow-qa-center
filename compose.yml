@@ -5,7 +5,7 @@ services:
     # immutable image already built on DEV, `--no-build`. For local
     # source-bind-mounted development, use docker/compose.yml instead (that
     # one is unaffected by this file).
-    image: ${MESFLOW_QA_IMAGE:-mesflow-qa-center:1.29.0}
+    image: ${MESFLOW_QA_IMAGE:-mesflow-qa-center:1.30.0}
     container_name: mesflow-qa-center
     restart: unless-stopped
     env_file:
