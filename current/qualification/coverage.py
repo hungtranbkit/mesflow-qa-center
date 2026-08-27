@@ -128,6 +128,43 @@ def report(run_ids: list[str] | None = None) -> dict[str, Any]:
             "features": details}
 
 
+def run_ids_for_artifact(artifact_id: str) -> list[str]:
+    """Spec section 10 (cross-run coverage aggregation): every qualification
+    run that used this EXACT artifact row -- register_artifact() is
+    content-addressed (same SHA256 bytes always resolve to the same
+    qa_artifacts.id, never a new row), so this is genuinely "every run of
+    these exact bytes", not a fuzzy version match. Pooled regardless of
+    environment_id on purpose: every qualification.cli invocation mints its
+    own throwaway environment identity (see attest_environment() call
+    sites), so grouping by environment_id the way policy.evaluate() does
+    for a single certification would exclude almost everything -- migration/
+    backup-restore/rollback/run-artifact for the SAME artifact each get
+    their own environment row. Never crosses artifact SHA -- the WHERE
+    clause is exact-artifact_id only."""
+    conn = connect()
+    return [row["id"] for row in conn.execute(
+        "SELECT id FROM qa_qualification_runs WHERE artifact_id=? ORDER BY started_at", (artifact_id,)).fetchall()]
+
+
+def artifact_report(artifact_sha256: str) -> dict[str, Any]:
+    """"ARTIFACT COVERAGE" (spec section 10): what has this exact artifact
+    SHA256 been proven to satisfy across every valid qualification run of
+    it, as opposed to report(run_ids)'s "RUN COVERAGE" (what did this one
+    specific run prove). Reuses report() completely unchanged -- it already
+    accepts a list of run_ids and was already written to aggregate evidence
+    across however many are passed in; the only new logic here is resolving
+    "every run of this exact artifact" before handing that list to it."""
+    conn = connect()
+    artifact = conn.execute("SELECT id FROM qa_artifacts WHERE sha256=?", (artifact_sha256,)).fetchone()
+    if not artifact:
+        return {"artifact_sha256": artifact_sha256, "run_ids": [], **report([])}
+    run_ids = run_ids_for_artifact(artifact["id"])
+    result = report(run_ids)
+    result["artifact_sha256"] = artifact_sha256
+    result["run_ids"] = run_ids
+    return result
+
+
 def snapshot(run_id: str) -> dict[str, Any]:
     """Compute coverage for exactly one qualification run and persist it
     permanently (qa_coverage_snapshots), independent of the run's ephemeral
