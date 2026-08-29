@@ -87,6 +87,29 @@ deployment:
     projectflow_direct_execution: false
 
 dependencies:
-  - target: mesflow-app
-    type: TEST
-    evidence: "compose.yml MESFLOW_QA_INTERNAL_URL default http://mesflow-app:8080"
+- target: mesflow-app
+  type: TEST
+  evidence: "compose.yml MESFLOW_QA_INTERNAL_URL default http://mesflow-app:8080"
+sandbox:
+  compose_file: compose.sandbox.yml
+  default_profile: QA_CENTER
+  profiles:
+    QA_CENTER:
+      services:
+      - qa
+  ports:
+    qa:
+      container: 8095
+  health:
+    qa:
+      path: /api/version
+  outputs:
+    qa_center_url:
+      service: qa
+  seed:
+    default: QA_DEMO
+  auto_provision: false
+  runtime_dependencies:
+  - repo: mesflow-app
+    profile: BACKEND
+    mode: KNOWN_GOOD_MAIN
