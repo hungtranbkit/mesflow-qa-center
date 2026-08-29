@@ -15,6 +15,7 @@
   <a href="/bugs">Bugs</a>
   <a href="/demo">Demo Center</a>
   <a href="/simulations">Factory Soak</a>
+  <a href="/qualifications">Release Qualification</a>
 </nav>
 <div id="toast" class="toast" hidden></div>
 <header class="ops-topbar">
@@ -24,10 +25,12 @@
 <main class="ops-main">
   <section class="section-title simple"><div><h2>Feature Registry</h2><p>Trạng thái ổn định của từng feature được theo dõi tự động.</p></div><button id="refreshFeatures" class="secondary">Làm mới</button></section>
   <div class="card">
+    <div class="table-wrap">
     <table class="ops-table">
       <thead><tr><th>Feature</th><th>Trạng thái</th><th>Chuỗi PASS</th><th>Coverage gap</th><th>Cần regression</th><th>Pass gần nhất</th><th>Regression cases</th></tr></thead>
       <tbody id="featureBody"><tr><td colspan="7" class="empty">Đang tải…</td></tr></tbody>
     </table>
+    </div>
   </div>
 
   <section class="section-title simple" style="margin-top:26px"><div><h2>Run Plan</h2><p>Không bao giờ silently skip — mỗi quyết định luôn kèm lý do.</p></div></section>
