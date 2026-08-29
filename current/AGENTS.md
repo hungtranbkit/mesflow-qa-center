@@ -80,4 +80,4 @@ Chỉ thao tác data có prefix:
 `QA-`
 `CODEX-DEMO-`
 
-Không cleanup dữ liệu ngoài prefix.
+Không cleanup dữ liệu ngoài prefix. UI Preview Lab có thể reset toàn bộ **preview database** sau khi vượt qua guard ở trên; tuyệt đối không áp dụng reset đó cho target database.
