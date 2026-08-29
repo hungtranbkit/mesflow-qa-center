@@ -15,6 +15,7 @@
   <a href="/bugs">Bugs</a>
   <a href="/demo">Demo Center</a>
   <a href="/simulations" class="active">Factory Soak</a>
+  <a href="/qualifications">Release Qualification</a>
 </nav>
 <div id="toast" class="toast" hidden></div>
 <header class="ops-topbar">
@@ -23,6 +24,14 @@
   <a class="ghost-link" href="/">← QA Center</a>
 </header>
 <main class="ops-main">
+  <section class="context-band" aria-label="Simulation target context">
+    <div class="context-item"><span class="context-label">Target</span><strong class="context-value">Selected Preview Lab</strong></div>
+    <div class="context-item"><span class="context-label">Endpoint</span><code class="context-value mono" id="simulationTargetEndpoint">Chọn môi trường bên dưới</code></div>
+    <div class="context-item"><span class="context-label">Environment</span><span class="environment-badge">LOCAL PREVIEW</span></div>
+    <div class="context-item"><span class="context-label">MESFlow version</span><strong class="context-value">Theo preview artifact</strong></div>
+    <div class="context-item"><span class="context-label">QA Center version</span><strong class="context-value">v{{ app_version }}</strong></div>
+    <div class="context-item"><span class="context-label">Connection</span><span class="pill neutral">Chưa chọn target</span></div>
+  </section>
   <section class="section-title simple"><div><h2>Start a run</h2><p>Point this at an already-running UI Preview Lab environment (Preview Lab tab). One active run at a time in Phase A.</p></div></section>
   <div class="card">
     <div class="form-grid">
@@ -56,7 +65,7 @@
     </div>
     <div class="toolbar">
       <button id="startBtn" class="primary">Start simulation</button>
-      <button id="stopBtn" class="secondary" disabled>Stop run</button>
+      <button id="stopBtn" class="danger" disabled>Stop run</button>
       <span id="startMsg" class="muted"></span>
     </div>
   </div>
@@ -68,10 +77,12 @@
 
   <section class="section-title simple" style="margin-top:26px"><div><h2>New/known incidents (SIM:*)</h2><p>Same Bug Center dedup/occurrence tracking as Functional QA -- a repeated failure increments occurrences, it does not spam a new record.</p></div></section>
   <div class="card">
+    <div class="table-wrap">
     <table class="ops-table">
       <thead><tr><th>Bug</th><th>Severity</th><th>Type</th><th>Title</th><th>Status</th><th>Occurrences</th><th>Last seen</th></tr></thead>
       <tbody id="incidentBody"><tr><td colspan="7" class="empty">No incidents yet.</td></tr></tbody>
     </table>
+    </div>
   </div>
 </main>
 <script src="/static/simulation.js?v={{ app_version }}"></script>
