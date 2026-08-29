@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Release Qualification · MESFlow QA Center</title>
+  <link rel="stylesheet" href="/static/ops_pages.css?v={{ app_version }}">
+  <link rel="stylesheet" href="/static/qualifications.css?v={{ app_version }}">
+</head>
+<body>
+<!--
+THESIS: Release qualification is an evidence ledger, not a test-launch dashboard.
+OWN-WORLD: Industrial navy command rail, white evidence surfaces, compact tables, semantic status only.
+STORY: Identify the exact artifact, inspect first failure and coverage, then verify eligibility without inference.
+FIRST VIEWPORT: Artifact identity and eligibility occupy the top band; suite ledger and coverage gaps follow immediately.
+FORM: Operations control board; seed qualification-ledger-v1.
+FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
+-->
+<nav class="topnav" aria-label="Điều hướng QA Center">
+  <a href="/">Dashboard</a>
+  <a href="/qualifications" class="active" aria-current="page">Release Qualification</a>
+  <a href="/preview-lab">UI Preview Lab</a>
+  <a href="/regression">Regression</a>
+  <a href="/bugs">Bugs</a>
+  <a href="/simulations">Factory Soak</a>
+</nav>
+<main class="qualification-shell" id="main">
+  <header class="page-head">
+    <div>
+      <h1>Release Qualification</h1>
+      <p>Chứng cứ kiểm định được gắn với đúng SHA256. Đổi artifact đồng nghĩa phải kiểm định lại.</p>
+    </div>
+    <button id="refreshQualification" type="button">Làm mới dữ liệu</button>
+  </header>
+
+  <section class="identity-band" aria-labelledby="current-title">
+    <div class="identity-main">
+      <h2 id="current-title">Artifact đang xem</h2>
+      <strong id="artifactName">Chưa có qualification run</strong>
+      <code id="artifactSha">—</code>
+      <p id="environmentIdentity">Chưa có environment identity</p>
+    </div>
+    <div class="eligibility" id="eligibilityBlock">
+      <span>Production eligibility</span>
+      <strong id="eligibilityValue">FALSE</strong>
+      <small id="eligibilityReason">Chưa có certification đáp ứng policy.</small>
+    </div>
+  </section>
+
+  <section class="qualification-grid">
+    <article class="panel suite-panel">
+      <div class="panel-head">
+        <div><h2>Suite ledger</h2><p>Trạng thái thực từ qualification run gần nhất.</p></div>
+        <span id="runStatus" class="status status-neutral">NOT_TESTED</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Suite</th><th>Layer</th><th>Bắt buộc</th><th>Kết quả</th><th>Exit</th><th>Ghi chú</th></tr></thead>
+          <tbody id="suiteRows"><tr><td colspan="6" class="empty-cell">Chưa có suite evidence.</td></tr></tbody>
+        </table>
+      </div>
+    </article>
+
+    <aside class="panel decision-panel">
+      <div class="panel-head"><div><h2>Decision blockers</h2><p>Lý do chưa đủ điều kiện Production.</p></div></div>
+      <ul id="blockerList"><li>Chưa có certification cùng artifact SHA256.</li></ul>
+      <p class="eligibility-note">"Production Eligible: YES" nghĩa là <strong>đủ điều kiện để promote</strong> theo policy đã chọn — <em>không</em> có nghĩa là đã được deploy/approve vào Production. Con người vẫn phải duyệt riêng.</p>
+    </aside>
+  </section>
+
+  <section class="panel live-panel" id="livePanel" hidden>
+    <div class="panel-head">
+      <div><h2>Đang chạy trực tiếp</h2><p>Quan sát run thật đang thực thi — không phải screenshot tĩnh.</p></div>
+      <span id="liveStatus" class="status status-neutral">—</span>
+    </div>
+    <div class="live-grid">
+      <div><span>Phase / Scenario</span><strong id="liveScenario">—</strong></div>
+      <div><span>Thời gian mô phỏng</span><strong id="liveSimTime">—</strong></div>
+      <div><span>Current action</span><strong id="liveAction">Chưa có dữ liệu current-action từ runner này</strong></div>
+      <div><span>App CPU / RSS</span><strong id="liveResources">—</strong></div>
+      <div><span>Probe p50/p95/p99</span><strong id="liveLatency">—</strong></div>
+      <div><span>DB connections</span><strong id="liveDbConn">—</strong></div>
+      <div><span>Sessions started/finished</span><strong id="liveSessions">—</strong></div>
+      <div><span>Integrity violations</span><strong id="liveIntegrity">—</strong></div>
+    </div>
+    <div class="live-nav" id="liveNav"></div>
+    <h3>Incidents</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Thời gian</th><th>Mức độ</th><th>Phân loại</th><th>Tóm tắt</th></tr></thead>
+        <tbody id="incidentRows"><tr><td colspan="4" class="empty-cell">Chưa có incident.</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel coverage-panel">
+    <div class="panel-head">
+      <div><h2>Feature coverage</h2><p>Coverage nghiệp vụ theo layer và driver; không dùng line coverage làm mẫu số.</p></div>
+      <div class="coverage-summary"><strong id="coverageCount">0 / 20</strong><span id="criticalCoverage">Critical 0%</span></div>
+    </div>
+    <div class="coverage-toggle" role="tablist">
+      <button type="button" id="coverageToggleRun" class="toggle-active" data-scope="run">RUN COVERAGE</button>
+      <button type="button" id="coverageToggleArtifact" data-scope="artifact">ARTIFACT COVERAGE</button>
+    </div>
+    <p class="table-scroll-cue" id="coverageScopeNote">RUN COVERAGE: bằng chứng thực từ đúng run này. ARTIFACT COVERAGE: gộp mọi run hợp lệ của đúng SHA256 này (vd. migration/backup-restore/rollback chạy riêng).</p>
+    <div class="coverage-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="coverageFill"></span></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Feature</th><th>Critical</th><th>Layers còn thiếu</th><th>Drivers còn thiếu</th><th>Trạng thái</th></tr></thead>
+        <tbody id="coverageRows"><tr><td colspan="5" class="empty-cell">Đang tải registry…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel kiosk-panel" id="kioskPanel">
+    <div class="panel-head">
+      <div><h2>Kiosk Certification</h2><p>Xác nhận hành vi kiosk thật qua giao thức kiosk v2 thật — không phải mock.</p></div>
+      <span id="kioskProfileLabel" class="status status-neutral">—</span>
+    </div>
+    <div class="kiosk-summary" id="kioskSummary">
+      <p>Phần mềm kiosk ổn định? <strong id="kioskQSoftware">—</strong></p>
+      <p>Offline / kết nối lại ổn định? <strong id="kioskQOffline">—</strong></p>
+      <p>Đã kiểm ESP32 thật (HIL)? <strong id="kioskQHil">—</strong></p>
+      <p>Đã kiểm OTA? <strong id="kioskQOta">—</strong></p>
+    </div>
+    <div class="kiosk-actions" id="kioskActions">
+      <button type="button" data-kiosk-run="QUICK">Run Quick Test</button>
+      <button type="button" data-kiosk-run="STANDARD">Run Full Software Kiosk Test</button>
+      <button type="button" data-kiosk-run="RELIABILITY">Run Network/Reliability Test</button>
+      <button type="button" data-kiosk-run="STRESS">Run Stress Test</button>
+      <button type="button" data-kiosk-run="HIL_ONLY">Run Physical ESP HIL</button>
+    </div>
+    <p class="table-scroll-cue" id="kioskActionHint">Chọn một run Kiosk Certification (cột trái) để bật các nút chạy lại theo profile.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Nhóm</th><th>Đạt</th><th>Không đạt</th><th>Blocked</th><th>Tổng</th></tr></thead>
+        <tbody id="kioskCategoryRows"><tr><td colspan="5" class="empty-cell">Chưa có kết quả kiosk cho run này.</td></tr></tbody>
+      </table>
+    </div>
+    <details class="kiosk-detail-wrap">
+      <summary>Chi tiết từng testcase</summary>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Testcase</th><th>Tên</th><th>Kết quả</th><th>Bắt đầu</th><th>Điểm khác biệt đầu tiên</th></tr></thead>
+          <tbody id="kioskTestcaseRows"><tr><td colspan="5" class="empty-cell">—</td></tr></tbody>
+        </table>
+      </div>
+    </details>
+  </section>
+
+  <section class="panel policy-panel">
+    <div class="panel-head"><div><h2>Release policy tiers</h2><p>Cùng một artifact SHA256, đánh giá dưới FAST / STRONG / EXTENDED.</p></div></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Tier</th><th>Policy key</th><th>Bắt buộc</th><th>Đã thoả</th><th>Còn thiếu</th><th>Eligible</th></tr></thead>
+        <tbody id="policyRows"><tr><td colspan="6" class="empty-cell">Chưa có artifact để đánh giá.</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel history-panel">
+    <div class="panel-head">
+      <div><h2>Qualification history</h2><p>Mỗi dòng giữ nguyên artifact và environment identity. Chọn 2 dòng để so sánh.</p></div>
+      <button id="compareRuns" type="button">So sánh 2 run đã chọn</button>
+    </div>
+    <div class="run-list" id="qualificationRuns"><p class="empty-cell">Chưa có qualification run.</p></div>
+    <div class="table-wrap" id="compareWrap" hidden>
+      <table>
+        <thead><tr><th>Chỉ số</th><th id="compareColA">Run A</th><th id="compareColB">Run B</th></tr></thead>
+        <tbody id="compareRows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel sandbox-panel">
+    <div class="panel-head">
+      <div><h2>Sandboxes</h2><p>Vòng đời sandbox thật (Docker) của qualification run này. Mở ứng dụng thật, không phải screenshot.</p></div>
+      <button id="refreshSandboxes" type="button">Làm mới sandboxes</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Sandbox</th><th>Version / SHA</th><th>Loại</th><th>Trạng thái</th><th>Health</th><th>Hành động</th></tr></thead>
+        <tbody id="sandboxRows"><tr><td colspan="6" class="empty-cell">Chưa có sandbox nào cho run này.</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+<div id="qualificationError" class="error-banner" role="alert" hidden></div>
+<script src="/static/qualifications.js?v={{ app_version }}"></script>
+</body>
+</html>

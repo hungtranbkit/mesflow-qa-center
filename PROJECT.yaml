@@ -21,7 +21,28 @@ service:
     url: http://127.0.0.1:${QA_CENTER_LOCAL_PORT:-8095}/api/version
     timeout_seconds: 15
 
+ci:
+  # Universal CI/CD Standard V1 onboarding (see ../docs/CI_CD_STANDARD.md
+  # section 11, ../AGENTS.md). Additive/optional field.
+  required: [preflight, test]
+
 commands:
+
+  preflight:
+    command: ./scripts/ci-preflight.sh
+    working_directory: .
+    timeout_seconds: 60
+
+  test:
+    # Thin wrapper around the real current/tests/ pytest suite -- see the
+    # script's own header comment for exactly which subset runs and why
+    # (this host may already be running a live mesflow-qa-center/
+    # mesflow-app deployment; tests that touch Docker or a live host/agent
+    # target are excluded until QA Center has its own isolated CI sandbox,
+    # a known follow-up, same as this file's own "local: NOT WIRED" note).
+    command: ./scripts/ci-test.sh
+    working_directory: .
+    timeout_seconds: 900
 
   build:
     command: ./scripts/build-release.sh
@@ -66,6 +87,29 @@ deployment:
     projectflow_direct_execution: false
 
 dependencies:
-  - target: mesflow-app
-    type: TEST
-    evidence: "compose.yml MESFLOW_QA_INTERNAL_URL default http://mesflow-app:8080"
+- target: mesflow-app
+  type: TEST
+  evidence: "compose.yml MESFLOW_QA_INTERNAL_URL default http://mesflow-app:8080"
+sandbox:
+  compose_file: compose.sandbox.yml
+  default_profile: QA_CENTER
+  profiles:
+    QA_CENTER:
+      services:
+      - qa
+  ports:
+    qa:
+      container: 8095
+  health:
+    qa:
+      path: /api/version
+  outputs:
+    qa_center_url:
+      service: qa
+  seed:
+    default: QA_DEMO
+  auto_provision: false
+  runtime_dependencies:
+  - repo: mesflow-app
+    profile: BACKEND
+    mode: KNOWN_GOOD_MAIN

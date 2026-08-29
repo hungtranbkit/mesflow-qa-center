@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MESFlow QA Center · Regression Protection</title>
+  <link rel="stylesheet" href="/static/app.css?v={{ app_version }}">
+  <link rel="stylesheet" href="/static/ops_pages.css?v={{ app_version }}">
+</head>
+<body>
+<nav class="topnav">
+  <a href="/">Dashboard</a>
+  <a href="/preview-lab">UI Preview Lab</a>
+  <a href="/regression" class="active">Regression Protection</a>
+  <a href="/bugs">Bugs</a>
+  <a href="/demo">Demo Center</a>
+  <a href="/simulations">Factory Soak</a>
+</nav>
+<div id="toast" class="toast" hidden></div>
+<header class="ops-topbar">
+  <div><div class="eyebrow">MESFLOW TEST AUTOMATION</div><h1>Regression Protection</h1><p>Một feature chỉ được coi là STABLE khi có test, đã pass liên tiếp, không có bug mở và không còn coverage gap.</p></div>
+  <a class="ghost-link" href="/">← QA Center</a>
+</header>
+<main class="ops-main">
+  <section class="section-title simple"><div><h2>Feature Registry</h2><p>Trạng thái ổn định của từng feature được theo dõi tự động.</p></div><button id="refreshFeatures" class="secondary">Làm mới</button></section>
+  <div class="card">
+    <table class="ops-table">
+      <thead><tr><th>Feature</th><th>Trạng thái</th><th>Chuỗi PASS</th><th>Coverage gap</th><th>Cần regression</th><th>Pass gần nhất</th><th>Regression cases</th></tr></thead>
+      <tbody id="featureBody"><tr><td colspan="7" class="empty">Đang tải…</td></tr></tbody>
+    </table>
+  </div>
+
+  <section class="section-title simple" style="margin-top:26px"><div><h2>Run Plan</h2><p>Không bao giờ silently skip — mỗi quyết định luôn kèm lý do.</p></div></section>
+  <div class="card">
+    <div class="toolbar">
+      <label><span class="muted">Mode</span></label>
+      <select id="planMode"><option value="FAST">FAST</option><option value="REGRESSION">REGRESSION</option><option value="FULL">FULL</option></select>
+      <button id="computePlan">Tính run plan</button>
+      <span id="planSummary" class="muted"></span>
+    </div>
+    <div id="planDecisions" style="margin-top:12px"><div class="empty">Chưa tính run plan.</div></div>
+    <div id="mandatoryTests" style="margin-top:10px"></div>
+  </div>
+
+  <section class="section-title simple" style="margin-top:26px"><div><h2>Impact Detection</h2><p>So sánh 2 commit để biết feature nào bị impacted bởi source đã đổi.</p></div></section>
+  <div class="card">
+    <div class="form-grid">
+      <label><span>Previous commit (đã verify tốt)</span><input id="prevCommit" placeholder="ví dụ: a1b2c3d hoặc HEAD~5"></label>
+      <label><span>Current commit</span><input id="currCommit" value="HEAD"></label>
+    </div>
+    <div class="toolbar"><button id="computeImpact">Tính impact</button></div>
+    <div id="impactResult" style="margin-top:12px"></div>
+  </div>
+</main>
+<script src="/static/regression.js?v={{ app_version }}"></script>
+</body>
+</html>

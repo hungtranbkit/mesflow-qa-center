@@ -1,0 +1,754 @@
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import uuid
+from pathlib import Path
+
+from .policy import evaluate
+from .backup_restore import BackupRestoreRunner
+from .build_integrity import BuildIntegrityRunner
+from .chaos import ChaosRunner
+from .coverage import snapshot as coverage_snapshot
+from .critical_unit import run as run_critical_unit
+from .database import DeterministicDatabase
+from .deployment import ArtifactDeployment
+from .esp_hil import EspHilRunner
+from .kiosk_emulator import KioskEmulatorRunner
+from .live import LiveMESFlowQualification
+from .load_soak import LoadSoakRunner
+from .long_simulation import LongSimulationRunner, PROFILES as LONG_SIMULATION_PROFILES
+from .offline_burst import OfflineBurstRunner
+from .post_deploy_smoke import PostDeploySmokeRunner
+from .recovery import RecoveryRunner
+from .replay import replay_scenario as replay_scenario_fn
+from .runner import QualificationRunner
+from .scheduler_reliability import SchedulerReliabilityRunner
+from .service import QualificationService
+from .store import connect, now
+from .test_deployment import TestDeploymentRunner
+from .upgrade import UpgradeRunner
+
+
+SUITE_RUNNERS = {"api_contract", "integration", "mes_workflows", "invariants", "ui_critical"}
+
+
+def _json(value):
+    print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True, default=str))
+
+
+def _git_commit(root: Path) -> str:
+    return subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], check=True,
+                          capture_output=True, text=True).stdout.strip()
+
+
+def _safe_inspect_package(artifact_path: Path) -> tuple[dict | None, int | None]:
+    """Every command that qualifies a real artifact starts by reading its
+    manifest. Found by hand: a sufficiently corrupted zip (a bad CRC-32,
+    not just a checksums.txt mismatch build_integrity's own dedicated
+    scenario catches) raised straight out of zipfile.extractall() and
+    crashed the whole CLI with a bare Python traceback -- no JSON, no
+    qualification run record, nothing evidenced or blocked. This is the
+    one place that first contact with an artifact's bytes happens, so it's
+    the one place that must never let a corrupted/malformed artifact
+    escape as an unhandled exception -- it must become a real, structured,
+    machine-readable BLOCKED result instead."""
+    try:
+        manifest, _, temp = ArtifactDeployment.inspect_package(artifact_path.resolve())
+        temp.cleanup()
+        return manifest, None
+    except Exception as exc:
+        _json({"status": "BLOCKED", "blocked_at": "artifact_inspection",
+              "error": str(exc), "error_class": type(exc).__name__,
+              "message": "the artifact could not be opened/extracted -- corrupted, truncated, or not a real "
+                        "MESFlow release bundle; no qualification run was created because no version identity "
+                        "could be read from it"})
+        return None, 1
+
+
+def _run_browser_suite_or_record_failure(run_id: str, target_url: str, evidence_root: Path) -> dict:
+    """Run the real Playwright critical-UI suite as part of the one-command
+    real-artifact flow (spec section 7). Import is deferred so that a host
+    without Playwright installed can still run --skip-browser; but if the
+    suite is requested and something prevents it from actually executing
+    (missing browsers, a crash before the first scenario, etc.), that must
+    surface as a FAILED required suite -- never as a silently-missing one,
+    and never as a false PASS. Per-scenario failures inside a suite that
+    did run are already handled by run_browser_suite() itself.
+    """
+    try:
+        from .browser import run_browser_suite
+        return run_browser_suite(run_id, target_url, evidence_root)
+    except Exception as exc:
+        suite_id = f"suite-{uuid.uuid4().hex}"
+        conn = connect()
+        started = now()
+        conn.execute("""INSERT INTO qa_suite_runs(id,qualification_run_id,suite_key,layer,required,status,
+          started_at,finished_at,command_json,summary_json) VALUES(?,?,'ui_critical','browser',1,'FAILED',?,?,'[]',?)""",
+          (suite_id, run_id, started, now(), json.dumps({"error": str(exc), "error_class": type(exc).__name__})))
+        conn.commit()
+        return {"suite_id": suite_id, "status": "FAILED", "scenarios": [],
+                "error": str(exc), "error_class": type(exc).__name__}
+
+
+def _run_suite_or_record_failure(run_id: str, suite_key: str, layer: str, fn) -> dict:
+    """Same failure-honesty contract as _run_browser_suite_or_record_failure,
+    generalized: if one of the newer production-policy suite runners raises
+    before it can record its own FAILED scenario (an unexpected bug in the
+    suite runner itself, a Docker daemon hiccup, etc.), that must still
+    surface as a FAILED required suite for THIS run, never as a silently
+    missing one."""
+    try:
+        return fn()
+    except Exception as exc:
+        suite_id = f"suite-{uuid.uuid4().hex}"
+        conn = connect()
+        started = now()
+        conn.execute("""INSERT INTO qa_suite_runs(id,qualification_run_id,suite_key,layer,required,status,
+          started_at,finished_at,command_json,summary_json) VALUES(?,?,?,?,1,'FAILED',?,?,'[]',?)""",
+          (suite_id, run_id, suite_key, layer, started, now(), json.dumps({"error": str(exc), "error_class": type(exc).__name__})))
+        conn.commit()
+        return {"suite_id": suite_id, "status": "FAILED", "scenarios": [],
+                "error": str(exc), "error_class": type(exc).__name__}
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="mesflow-qualify")
+    commands = parser.add_subparsers(dest="command", required=True)
+    run = commands.add_parser("run", help="run a headless qualification profile")
+    run.add_argument("--artifact", required=True, type=Path)
+    run.add_argument("--version", required=True)
+    run.add_argument("--source-root", required=True, type=Path)
+    run.add_argument("--environment-name", required=True)
+    run.add_argument("--environment-kind", choices=["LOCAL", "QA", "TEST", "PRODUCTION_TEST"], required=True)
+    run.add_argument("--target-url", required=True)
+    run.add_argument("--database-identity", required=True)
+    run.add_argument("--dataset-version", required=True)
+    run.add_argument("--scenario-set-version", required=True)
+    run.add_argument("--profile", choices=["quick", "full"], required=True)
+    run.add_argument("--suite-config", required=True, type=Path)
+    run.add_argument("--evidence-root", type=Path, default=Path("reports/qualification"))
+
+    artifact_run = commands.add_parser("run-artifact", help="deploy and qualify an immutable MESFlow image artifact "
+                                                            "against every implemented production-policy suite")
+    artifact_run.add_argument("--artifact", required=True, type=Path)
+    artifact_run.add_argument("--fixture-version", default="mesflow-fixture-v1")
+    artifact_run.add_argument("--scenario-set-version", default="mesflow-software-v1")
+    artifact_run.add_argument("--evidence-root", type=Path, default=Path("reports/qualification"))
+    artifact_run.add_argument("--keep-environment", action="store_true")
+    artifact_run.add_argument("--source-root", type=Path, default=None,
+                              help="MESFlow app repo root, for critical_unit; defaults to $MESFLOW_SOURCE_ROOT")
+    artifact_run.add_argument("--old-artifact", type=Path, default=None,
+                              help="a known-previously-qualified artifact; supplying this enables the upgrade suite "
+                                   "(omitted by default -- upgrade needs a real predecessor, never a fresh DB)")
+    artifact_run.add_argument("--skip-browser", action="store_true",
+                              help="omit the Playwright critical-UI suite (e.g. no browsers installed on this host); "
+                                   "the run is then honestly incomplete for certification, not falsely full")
+    artifact_run.add_argument("--skip-build-integrity", action="store_true")
+    artifact_run.add_argument("--skip-critical-unit", action="store_true")
+    artifact_run.add_argument("--skip-kiosk-emulator", action="store_true")
+    artifact_run.add_argument("--skip-recovery", action="store_true")
+    artifact_run.add_argument("--skip-test-deployment", action="store_true")
+    artifact_run.add_argument("--skip-post-deploy-smoke", action="store_true")
+    artifact_run.add_argument("--skip-load-soak", action="store_true")
+    artifact_run.add_argument("--soak-window-seconds", type=float, default=60.0)
+    artifact_run.add_argument("--skip-offline-burst", action="store_true")
+    artifact_run.add_argument("--offline-burst-profile", default="CI", choices=["CI", "QUALIFICATION"])
+    artifact_run.add_argument("--skip-scheduler-reliability", action="store_true")
+    artifact_run.add_argument("--enable-hil", action="store_true",
+                              help="attempt the esp_hil suite (real hardware); NOT_CONFIGURED/BLOCKED honestly "
+                                   "when no device or no reachable debug path, never silently skipped")
+    artifact_run.add_argument("--hil-backend-url", default=None,
+                              help="tunnel URL the physical device can reach back to THIS deployment; required "
+                                   "for esp_hil to progress past detection")
+    # Whether esp_hil PASS is actually MANDATORY for production_eligible is
+    # a certify-time policy input (--hil-configured on the `certify`
+    # command below), not something this command decides -- run-artifact
+    # always attempts/records esp_hil honestly regardless (NOT_CONFIGURED
+    # unless --enable-hil is passed); certify is what enforces it.
+    artifact_run.add_argument("--intentional-wrong-quantity", action="store_true", help=argparse.SUPPRESS)
+
+    replay = commands.add_parser("replay-suite", help="replay one suite against a fresh isolated deployment of the "
+                                                        "same artifact (spec section 8): resets to a correct "
+                                                        "deterministic fixture first, never reuses stale state")
+    replay.add_argument("--artifact", required=True, type=Path)
+    replay.add_argument("--suite", required=True, choices=sorted(SUITE_RUNNERS))
+    replay.add_argument("--fixture-version", default="mesflow-fixture-v1")
+    replay.add_argument("--evidence-root", type=Path, default=Path("reports/qualification"))
+    replay.add_argument("--keep-environment", action="store_true")
+    replay.add_argument("--replays-run-id", default="", help="the original qualification run this is replaying, "
+                                                              "for traceability only (not schema-enforced)")
+
+    replay_scenario_cmd = commands.add_parser("replay-scenario", help="replay exactly one scenario from a prior run "
+                                                                       "(spec section 9): same artifact sha256, same "
+                                                                       "fixture version, fresh isolated environment")
+    replay_scenario_cmd.add_argument("--scenario-run-id", required=True)
+    replay_scenario_cmd.add_argument("--evidence-root", type=Path, default=Path("reports/qualification"))
+    replay_scenario_cmd.add_argument("--keep-environment", action="store_true")
+
+    hil_cmd = commands.add_parser("hil", help="run only the esp_hil suite (spec section 12/21), against a fresh "
+                                              "isolated deployment of one artifact")
+    hil_cmd.add_argument("--artifact", required=True, type=Path)
+    hil_cmd.add_argument("--fixture-version", default="mesflow-fixture-v1")
+    hil_cmd.add_argument("--evidence-root", type=Path, default=Path("reports/qualification"))
+    hil_cmd.add_argument("--keep-environment", action="store_true")
+    hil_cmd.add_argument("--backend-url", default=None)
+
+    soak_cmd = commands.add_parser("soak", help="run only the load_soak suite (spec section 13/21), against a "
+                                                "fresh isolated deployment of one artifact")
+    soak_cmd.add_argument("--artifact", required=True, type=Path)
+    soak_cmd.add_argument("--fixture-version", default="mesflow-fixture-v1")
+    soak_cmd.add_argument("--evidence-root", type=Path, default=Path("reports/qualification"))
+    soak_cmd.add_argument("--keep-environment", action="store_true")
+    soak_cmd.add_argument("--profile", default="SMALL_FACTORY", choices=["SMALL_FACTORY", "MEDIUM_FACTORY", "LARGE_FACTORY"])
+    soak_cmd.add_argument("--speed", default="10X", choices=["REAL_TIME", "2X", "5X", "10X"])
+    soak_cmd.add_argument("--window-seconds", type=float, default=60.0)
+    soak_cmd.add_argument("--seed", type=int, default=None)
+
+    offline_burst_cmd = commands.add_parser("offline-burst", help="run only the offline_burst suite (spec section 3), "
+                                                                  "against a fresh isolated deployment of one artifact")
+    offline_burst_cmd.add_argument("--artifact", required=True, type=Path)
+    offline_burst_cmd.add_argument("--fixture-version", default="mesflow-fixture-v1")
+    offline_burst_cmd.add_argument("--evidence-root", type=Path, default=Path("reports/qualification"))
+    offline_burst_cmd.add_argument("--keep-environment", action="store_true")
+    offline_burst_cmd.add_argument("--profile", default="CI", choices=["CI", "QUALIFICATION"])
+    offline_burst_cmd.add_argument("--kiosk-count", type=int, default=None)
+    offline_burst_cmd.add_argument("--seed", type=int, default=None)
+
+    kiosk_certify_cmd = commands.add_parser("kiosk-certify", help="run the Kiosk Certification suite (qualification/"
+                                                                  "kiosk_registry.py profiles), against a fresh isolated "
+                                                                  "deployment of one artifact, plus real ESP HIL when "
+                                                                  "the profile calls for it and hardware is present")
+    kiosk_certify_cmd.add_argument("--artifact", required=True, type=Path)
+    kiosk_certify_cmd.add_argument("--fixture-version", default="mesflow-fixture-v1")
+    kiosk_certify_cmd.add_argument("--evidence-root", type=Path, default=Path("reports/qualification"))
+    kiosk_certify_cmd.add_argument("--keep-environment", action="store_true")
+    kiosk_certify_cmd.add_argument("--profile", default="STANDARD",
+                                   choices=["QUICK", "STANDARD", "RELIABILITY", "STRESS", "FULL", "HIL_ONLY"])
+    kiosk_certify_cmd.add_argument("--kiosk-count", type=int, default=None,
+                                   help="STRESS/FULL profiles only: multi-kiosk offline-burst scale (offline_burst.py)")
+    kiosk_certify_cmd.add_argument("--seed", type=int, default=None)
+    kiosk_certify_cmd.add_argument("--hil-backend-url", default=None,
+                                   help="real device's own reachable URL to this run's isolated sandbox, required "
+                                        "for HIL_ONLY/FULL to progress past BLOCKED once hardware is detected")
+
+    chaos_cmd = commands.add_parser("chaos", help="run controlled app/DB/network/stall faults against a fresh isolated sandbox")
+    chaos_cmd.add_argument("--artifact", required=True, type=Path)
+    chaos_cmd.add_argument("--fixture-version", default="mesflow-fixture-v1")
+    chaos_cmd.add_argument("--evidence-root", type=Path, default=Path("reports/qualification"))
+    chaos_cmd.add_argument("--keep-environment", action="store_true")
+
+    migration_cmd = commands.add_parser("migration", help="run only the upgrade suite (spec section 6, MIGRATION run "
+                                                          "kind) as a first-class producing run: real old artifact + "
+                                                          "representative old-version data -> real migrations -> "
+                                                          "health -> data comparison -> integrity -> critical smoke")
+    migration_cmd.add_argument("--old-artifact", required=True, type=Path)
+    migration_cmd.add_argument("--new-artifact", required=True, type=Path)
+    migration_cmd.add_argument("--fixture-version", default="mesflow-fixture-v1")
+    migration_cmd.add_argument("--evidence-root", type=Path, default=Path("reports/qualification"))
+    migration_cmd.add_argument("--keep-environment", action="store_true")
+
+    rollback_cmd = commands.add_parser("rollback", help="run the supported ROLLBACK strategy: old artifact -> "
+                                                        "upgrade -> controlled failure -> restore pre-upgrade "
+                                                        "database backup + app revert -> integrity + old smoke")
+    rollback_cmd.add_argument("--old-artifact", required=True, type=Path)
+    rollback_cmd.add_argument("--new-artifact", required=True, type=Path)
+    rollback_cmd.add_argument("--fixture-version", default="mesflow-fixture-v1")
+    rollback_cmd.add_argument("--evidence-root", type=Path, default=Path("reports/qualification"))
+    rollback_cmd.add_argument("--keep-environment", action="store_true")
+
+    simulation_cmd = commands.add_parser("long-simulation", help="run a first-class factory simulation profile")
+    simulation_cmd.add_argument("--artifact", required=True, type=Path)
+    simulation_cmd.add_argument("--fixture-version", default="mesflow-fixture-v1")
+    simulation_cmd.add_argument("--evidence-root", type=Path, default=Path("reports/qualification"))
+    simulation_cmd.add_argument("--profile", default="SMOKE", choices=sorted(LONG_SIMULATION_PROFILES))
+    simulation_cmd.add_argument("--accelerated", action="store_true")
+    simulation_cmd.add_argument("--seed", type=int, default=None)
+    simulation_cmd.add_argument("--stop-after-wall-seconds", type=float, default=None)
+    simulation_cmd.add_argument("--keep-environment", action="store_true")
+
+    backup_restore_cmd = commands.add_parser("backup-restore", help="run only the backup_restore suite (spec section "
+                                                                    "7): real pg_dump from a source sandbox, restored "
+                                                                    "into a SEPARATE sandbox, data comparison + "
+                                                                    "integrity + smoke, never restoring over the source")
+    backup_restore_cmd.add_argument("--artifact", required=True, type=Path)
+    backup_restore_cmd.add_argument("--fixture-version", default="mesflow-fixture-v1")
+    backup_restore_cmd.add_argument("--evidence-root", type=Path, default=Path("reports/qualification"))
+    backup_restore_cmd.add_argument("--keep-environment", action="store_true")
+
+    manifest = commands.add_parser("manifest")
+    manifest.add_argument("run_id")
+    certify = commands.add_parser("certify")
+    certify.add_argument("--artifact-id", required=True)
+    certify.add_argument("--environment-id", required=True)
+    certify.add_argument("--run-id", action="append", required=True)
+    certify.add_argument("--hil-configured", action="store_true")
+    args = parser.parse_args(argv)
+    # Cancel path (spec section 13/14): the web job launcher's /jobs/<id>/cancel
+    # sends SIGTERM to this exact process. Left unhandled, SIGTERM kills the
+    # interpreter immediately -- the try/finally blocks below that destroy the
+    # sandbox and close out qa_suite_runs/qa_qualification_runs rows would
+    # never execute, leaking exactly the orphaned containers/networks already
+    # documented as a real gap (SandboxManager.reap_orphans() only reaps DB
+    # rows, not raw docker objects from a process that never reaches its own
+    # cleanup). Converting SIGTERM into a normal SystemExit lets every
+    # existing finally: block run its real cleanup on cancel, without adding
+    # any new run/evidence/sandbox system.
+    import signal as _signal
+
+    def _handle_sigterm(signum, frame):
+        raise SystemExit(143)
+
+    _signal.signal(_signal.SIGTERM, _handle_sigterm)
+    service = QualificationService()
+    # Re-run/Clone (spec section 7/8): the exact replayable command line
+    # for whichever subcommand this invocation is, persisted on the run row
+    # itself via start_run(launch_argv=...) below -- a web-triggered
+    # re-run/clone just reads this back and launches it again (optionally
+    # patching a flag) instead of QA Center inventing a second way to
+    # reconstruct a qualification.cli call per run_kind.
+    launch_argv = ["python3", "-m", "qualification.cli", *(argv if argv is not None else sys.argv[1:])]
+
+    if args.command == "manifest":
+        _json(service.run_manifest(args.run_id))
+        return 0
+
+    if args.command == "migration":
+        # MIGRATION (spec section 6): a first-class producing run around
+        # the EXISTING upgrade suite (old real artifact + representative
+        # old-version data -> real migrations -> health -> data comparison
+        # -> integrity -> critical smoke) -- UpgradeRunner already does
+        # exactly this and manages its own PRODUCTION_LIKE-shaped disposable
+        # sandbox; this command just gives it its own run_kind and a
+        # standalone CLI entry point instead of only ever running inside
+        # run-artifact's optional --old-artifact path.
+        manifest, err_code = _safe_inspect_package(args.new_artifact)
+        if err_code is not None:
+            return err_code
+        artifact = service.register_artifact(application_version=str(manifest["version"]),
+                                             git_commit=str(manifest.get("source_commit") or "unknown"), path=args.new_artifact)
+        environment = service.attest_environment(name=f"migration-{artifact['sha256'][:12]}-{uuid.uuid4().hex[:8]}",
+                                                  kind="QA", target_url="http://qualification.invalid",
+                                                  database_identity="pending-isolated-postgresql", destructive_allowed=True,
+                                                  identity=f"QA:migration:{artifact['sha256']}:{uuid.uuid4().hex[:8]}")
+        qualification = service.start_run(artifact_id=artifact["id"], environment_id=environment["id"], profile="migration",
+                                          dataset_version=args.fixture_version, scenario_set_version="migration",
+                                          run_kind="MIGRATION", launch_argv=launch_argv)
+        try:
+            result = UpgradeRunner(args.evidence_root).run(qualification["id"], args.old_artifact, args.new_artifact,
+                                                           fixture_version=args.fixture_version, keep_environment=args.keep_environment)
+            final = service.finish_run(qualification["id"])
+            final["suite_result"] = result
+            final["coverage_snapshot"] = coverage_snapshot(qualification["id"])
+            _json(final)
+            return 0 if final["status"] == "PASSED" else 1
+        except Exception as exc:
+            final = service.finish_run(qualification["id"])
+            final["error"] = str(exc)
+            _json(final)
+            return 1
+
+    if args.command == "rollback":
+        # ROLLBACK (spec section 8): same UpgradeRunner machinery as
+        # migration, with perform_rollback=True adding the real, currently-
+        # supported rollback phases (pre-upgrade pg_dump restore + old app
+        # revert) after the upgrade completes. The repository has no
+        # authoritative deploy-rollback script promising reverse migrations,
+        # so the runner uses scripts/backup.sh + scripts/restore.sh semantics.
+        manifest, err_code = _safe_inspect_package(args.new_artifact)
+        if err_code is not None:
+            return err_code
+        artifact = service.register_artifact(application_version=str(manifest["version"]),
+                                             git_commit=str(manifest.get("source_commit") or "unknown"), path=args.new_artifact)
+        environment = service.attest_environment(name=f"rollback-{artifact['sha256'][:12]}-{uuid.uuid4().hex[:8]}",
+                                                  kind="QA", target_url="http://qualification.invalid",
+                                                  database_identity="pending-isolated-postgresql", destructive_allowed=True,
+                                                  identity=f"QA:rollback:{artifact['sha256']}:{uuid.uuid4().hex[:8]}")
+        qualification = service.start_run(artifact_id=artifact["id"], environment_id=environment["id"], profile="rollback",
+                                          dataset_version=args.fixture_version, scenario_set_version="rollback",
+                                          run_kind="ROLLBACK", launch_argv=launch_argv)
+        try:
+            result = UpgradeRunner(args.evidence_root).run(qualification["id"], args.old_artifact, args.new_artifact,
+                                                           fixture_version=args.fixture_version, keep_environment=args.keep_environment,
+                                                           perform_rollback=True)
+            final = service.finish_run(qualification["id"])
+            final["suite_result"] = result
+            final["coverage_snapshot"] = coverage_snapshot(qualification["id"])
+            _json(final)
+            return 0 if final["status"] == "PASSED" else 1
+        except Exception as exc:
+            final = service.finish_run(qualification["id"])
+            final["error"] = str(exc)
+            _json(final)
+            return 1
+
+    if args.command == "long-simulation":
+        manifest, err_code = _safe_inspect_package(args.artifact)
+        if err_code is not None:
+            return err_code
+        artifact = service.register_artifact(application_version=str(manifest["version"]),
+                                             git_commit=str(manifest.get("source_commit") or "unknown"), path=args.artifact)
+        environment = service.attest_environment(name=f"long-simulation-{artifact['sha256'][:12]}-{uuid.uuid4().hex[:8]}",
+                                                  kind="QA", target_url="http://qualification.invalid",
+                                                  database_identity="isolated-simulation-postgresql", destructive_allowed=True,
+                                                  identity=f"QA:long-simulation:{artifact['sha256']}:{uuid.uuid4().hex[:8]}")
+        qualification = service.start_run(artifact_id=artifact["id"], environment_id=environment["id"], profile=args.profile,
+                                          dataset_version=args.fixture_version, scenario_set_version="factory-simulation-v1",
+                                          run_kind="LONG_RUNNING_FACTORY_SIMULATION", launch_argv=launch_argv)
+        deployer = ArtifactDeployment(args.evidence_root)
+        deployment = None
+        try:
+            deployment = deployer.deploy(qualification["id"], args.artifact, fixture_version=args.fixture_version)
+            result = LongSimulationRunner(args.evidence_root).run(
+                qualification["id"], deployment, profile=args.profile, seed=args.seed,
+                accelerated=True if args.accelerated else None,
+                stop_after_wall_seconds=args.stop_after_wall_seconds)
+            final = service.finish_run(qualification["id"])
+            final["suite_result"] = result
+            final["coverage_snapshot"] = coverage_snapshot(qualification["id"])
+            _json(final)
+            return 0 if result["status"] == "PASSED" else 1
+        except SystemExit:
+            # Operator cancel (web job launcher -> SIGTERM -> the handler
+            # above). Record the real CANCELLED status instead of leaving
+            # the row stuck at RUNNING forever (spec section 14: a restart
+            # must never mistake a stopped run for a completed one).
+            service.mark_cancelled(qualification["id"])
+            raise
+        finally:
+            if deployment and not args.keep_environment:
+                deployer.destroy(deployment["namespace"])
+
+    if args.command == "backup-restore":
+        # BACKUP_RESTORE (spec section 7): BackupRestoreRunner manages its
+        # own SOURCE and RESTORE sandboxes (SandboxManager.deploy() with
+        # distinct namespace_suffix values under the same run) and their
+        # cleanup internally, same self-contained shape as migration/
+        # UpgradeRunner above.
+        manifest, err_code = _safe_inspect_package(args.artifact)
+        if err_code is not None:
+            return err_code
+        artifact = service.register_artifact(application_version=str(manifest["version"]),
+                                             git_commit=str(manifest.get("source_commit") or "unknown"), path=args.artifact)
+        environment = service.attest_environment(name=f"backup-restore-{artifact['sha256'][:12]}-{uuid.uuid4().hex[:8]}",
+                                                  kind="QA", target_url="http://qualification.invalid",
+                                                  database_identity="pending-isolated-postgresql", destructive_allowed=True,
+                                                  identity=f"QA:backup-restore:{artifact['sha256']}:{uuid.uuid4().hex[:8]}")
+        qualification = service.start_run(artifact_id=artifact["id"], environment_id=environment["id"], profile="backup-restore",
+                                          dataset_version=args.fixture_version, scenario_set_version="backup-restore",
+                                          run_kind="BACKUP_RESTORE", launch_argv=launch_argv)
+        try:
+            result = BackupRestoreRunner(args.evidence_root).run(qualification["id"], args.artifact,
+                                                                 fixture_version=args.fixture_version,
+                                                                 keep_environment=args.keep_environment)
+            final = service.finish_run(qualification["id"])
+            final["suite_result"] = result
+            final["coverage_snapshot"] = coverage_snapshot(qualification["id"])
+            _json(final)
+            return 0 if final["status"] == "PASSED" else 1
+        except Exception as exc:
+            final = service.finish_run(qualification["id"])
+            final["error"] = str(exc)
+            _json(final)
+            return 1
+
+    if args.command == "certify":
+        decision = evaluate(args.artifact_id, args.environment_id, args.run_id,
+                            hil_configured=args.hil_configured)
+        _json(decision)
+        return 0 if decision["production_eligible"] else 2
+
+    if args.command == "replay-scenario":
+        try:
+            result = replay_scenario_fn(args.scenario_run_id, args.evidence_root, keep_environment=args.keep_environment)
+            _json(result)
+            return 0 if result["replay_status"] == "PASSED" else 1
+        except Exception as exc:
+            _json({"error": str(exc), "error_class": type(exc).__name__})
+            return 1
+
+    if args.command in ("hil", "soak", "offline-burst", "chaos", "kiosk-certify"):
+        manifest, err_code = _safe_inspect_package(args.artifact)
+        if err_code is not None:
+            return err_code
+        artifact = service.register_artifact(application_version=str(manifest["version"]),
+                                             git_commit=str(manifest.get("source_commit") or "unknown"), path=args.artifact)
+        environment = service.attest_environment(name=f"{args.command}-{artifact['sha256'][:12]}-{uuid.uuid4().hex[:8]}",
+                                                  kind="QA", target_url="http://qualification.invalid",
+                                                  database_identity="pending-isolated-postgresql", destructive_allowed=True,
+                                                  identity=f"QA:{args.command}:{artifact['sha256']}:{uuid.uuid4().hex[:8]}")
+        # soak/offline-burst map directly onto their own run kinds; hil has
+        # no exact vocabulary match (spec section 4's list has no
+        # HIL-specific entry) -- FUNCTIONAL is the closest honest fit for
+        # "one standalone functional-ish suite run", not a fabricated category.
+        run_kind = {"soak": "SOAK", "offline-burst": "OFFLINE_BURST", "chaos": "CHAOS"}.get(args.command, "FUNCTIONAL")
+        qualification = service.start_run(artifact_id=artifact["id"], environment_id=environment["id"], profile=args.command,
+                                          dataset_version=args.fixture_version, scenario_set_version=args.command,
+                                          run_kind=run_kind, launch_argv=launch_argv)
+        deployer = ArtifactDeployment(args.evidence_root)
+        deployment = None
+        try:
+            if args.command == "soak":
+                deployment = deployer.deploy(qualification["id"], args.artifact, fixture_version=args.fixture_version)
+                DeterministicDatabase(args.evidence_root).seed(qualification["id"], deployment["db_container"], args.fixture_version)
+                result = LoadSoakRunner(args.evidence_root).run(qualification["id"], deployment, profile=args.profile,
+                                                                speed_label=args.speed, window_seconds=args.window_seconds, seed=args.seed)
+            elif args.command == "offline-burst":
+                deployment = deployer.deploy(qualification["id"], args.artifact, fixture_version=args.fixture_version)
+                DeterministicDatabase(args.evidence_root).seed(qualification["id"], deployment["db_container"], args.fixture_version)
+                result = OfflineBurstRunner(args.evidence_root).run(qualification["id"], deployment, profile=args.profile,
+                                                                    kiosk_count=args.kiosk_count, seed=args.seed)
+            elif args.command == "chaos":
+                deployment = deployer.deploy(qualification["id"], args.artifact, fixture_version=args.fixture_version)
+                DeterministicDatabase(args.evidence_root).seed(qualification["id"], deployment["db_container"], args.fixture_version)
+                result = ChaosRunner(args.evidence_root).run(qualification["id"], deployment)
+            elif args.command == "kiosk-certify":
+                from .kiosk_registry import PROFILES as KIOSK_PROFILES
+                spec = KIOSK_PROFILES[args.profile]
+                sub_results: dict[str, Any] = {}
+                if args.profile != "HIL_ONLY":
+                    deployment = deployer.deploy(qualification["id"], args.artifact, fixture_version=args.fixture_version)
+                    DeterministicDatabase(args.evidence_root).seed(qualification["id"], deployment["db_container"], args.fixture_version)
+                    emulator_profile = None if args.profile in ("STANDARD", "FULL") else args.profile
+                    sub_results["kiosk_emulator"] = KioskEmulatorRunner(args.evidence_root).run(
+                        qualification["id"], deployment["target_url"], deployment["db_container"], profile=emulator_profile)
+                    if spec.get("uses_offline_burst"):
+                        sub_results["offline_burst"] = OfflineBurstRunner(args.evidence_root).run(
+                            qualification["id"], deployment, profile="QUALIFICATION" if args.profile == "FULL" else "CI",
+                            kiosk_count=args.kiosk_count, seed=args.seed)
+                if spec.get("hil"):
+                    hil_backend = args.hil_backend_url or (deployment["target_url"] if deployment else None)
+                    sub_results["esp_hil"] = EspHilRunner(args.evidence_root).run(qualification["id"], backend_url=hil_backend)
+                # Overall status: FAILED if any real sub-suite FAILED; a
+                # sub-suite that came back BLOCKED/NOT_CONFIGURED (e.g. no
+                # ESP32 attached for FULL) never counts as a failure on its
+                # own -- that's exactly the honest distinction esp_hil.py's
+                # own three-outcome contract already draws, just rolled up
+                # here across possibly-multiple sub-suites.
+                terminal = {name: r.get("status", "PASSED") for name, r in sub_results.items()}
+                overall = "FAILED" if any(v == "FAILED" for v in terminal.values()) else "PASSED"
+                result = {"status": overall, "profile": args.profile, "sub_results": sub_results, "sub_status": terminal}
+            else:
+                # esp_hil doesn't need its own isolated Postgres/app -- it
+                # only needs the artifact registered for identity, plus
+                # (optionally) a backend_url the real device can reach.
+                result = EspHilRunner(args.evidence_root).run(qualification["id"], backend_url=args.backend_url)
+            final = service.finish_run(qualification["id"])
+            final["suite_result"] = result
+            final["coverage_snapshot"] = coverage_snapshot(qualification["id"])
+            _json(final)
+            return 0 if result["status"] == "PASSED" else (2 if result["status"] in ("NOT_CONFIGURED", "BLOCKED") else 1)
+        except Exception as exc:
+            final = service.finish_run(qualification["id"])
+            final["error"] = str(exc)
+            _json(final)
+            return 1
+        finally:
+            if deployment and not args.keep_environment:
+                deployer.destroy(deployment["namespace"])
+
+    if args.command == "run-artifact":
+        manifest, err_code = _safe_inspect_package(args.artifact)
+        if err_code is not None:
+            return err_code
+        artifact = service.register_artifact(application_version=str(manifest["version"]),
+                                             git_commit=str(manifest.get("source_commit") or "unknown"), path=args.artifact)
+        environment = service.attest_environment(name=f"qualification-{artifact['sha256'][:12]}", kind="QA",
+                                                  target_url="http://qualification.invalid",
+                                                  database_identity="pending-isolated-postgresql", destructive_allowed=True,
+                                                  identity=f"QA:artifact:{artifact['sha256']}")
+        qualification = service.start_run(artifact_id=artifact["id"], environment_id=environment["id"], profile="full",
+                                          dataset_version=args.fixture_version,
+                                          scenario_set_version=args.scenario_set_version,
+                                          run_kind="RELEASE_QUALIFICATION", launch_argv=launch_argv)
+        run_id = qualification["id"]
+        deployer = ArtifactDeployment(args.evidence_root)
+        deployment = None
+        results: dict = {}
+        try:
+            if not args.skip_build_integrity:
+                results["build_integrity"] = _run_suite_or_record_failure(run_id, "build_integrity", "build",
+                    lambda: BuildIntegrityRunner(args.evidence_root).run(run_id, args.artifact))
+            if not args.skip_critical_unit:
+                source_root = str(args.source_root) if args.source_root else os.environ.get("MESFLOW_SOURCE_ROOT", "")
+                if source_root:
+                    results["critical_unit"] = _run_suite_or_record_failure(run_id, "critical_unit", "unit",
+                        lambda: run_critical_unit(run_id, args.evidence_root, source_root=source_root))
+                else:
+                    results["critical_unit"] = {"status": "BLOCKED",
+                        "reason": "no --source-root and no MESFLOW_SOURCE_ROOT env var; critical_unit needs the "
+                                  "MESFlow app repo checked out somewhere reachable"}
+
+            deployment = deployer.deploy(run_id, args.artifact, fixture_version=args.fixture_version)
+            service.conn.execute("UPDATE qa_environments SET target_url=?,hostname=?,database_identity=?,attested_at=? WHERE id=?",
+                                 (deployment["target_url"], deployment["app_container"], deployment["database_identity"],
+                                  now(), environment["id"]))
+            service.conn.commit()
+            DeterministicDatabase(args.evidence_root).seed(run_id, deployment["db_container"], args.fixture_version)
+
+            if not args.skip_post_deploy_smoke:
+                results["post_deploy_smoke"] = _run_suite_or_record_failure(run_id, "post_deploy_smoke", "smoke",
+                    lambda: PostDeploySmokeRunner(args.evidence_root).run(run_id, deployment["target_url"]))
+
+            live = LiveMESFlowQualification(run_id, deployment["target_url"], deployment["db_container"],
+                                            args.evidence_root, intentional_wrong_quantity=args.intentional_wrong_quantity,
+                                            app_container=deployment["app_container"])
+            results["api_contract"] = live.api_contracts()
+            results["integration"] = live.integration()
+            results["mes_workflows"] = live.workflows()
+            results["invariants"] = live.invariants()
+
+            if not args.skip_browser:
+                results["ui_critical"] = _run_browser_suite_or_record_failure(run_id, deployment["target_url"], args.evidence_root)
+
+            if not args.skip_kiosk_emulator:
+                results["kiosk_emulator"] = _run_suite_or_record_failure(run_id, "kiosk_emulator", "kiosk",
+                    lambda: KioskEmulatorRunner(args.evidence_root).run(run_id, deployment["target_url"], deployment["db_container"]))
+
+            if not args.skip_recovery:
+                results["recovery"] = _run_suite_or_record_failure(run_id, "recovery", "recovery",
+                    lambda: RecoveryRunner(args.evidence_root).run(run_id, deployment))
+
+            if not args.skip_test_deployment:
+                results["test_deployment"] = _run_suite_or_record_failure(run_id, "test_deployment", "deployment",
+                    lambda: TestDeploymentRunner(args.evidence_root).run(run_id, args.artifact, registered_sha256=artifact["sha256"]))
+
+            if args.old_artifact:
+                results["upgrade"] = _run_suite_or_record_failure(run_id, "upgrade", "upgrade",
+                    lambda: UpgradeRunner(args.evidence_root).run(run_id, args.old_artifact, args.artifact,
+                                                                   fixture_version=args.fixture_version))
+            else:
+                results["upgrade"] = {"status": "NOT_IMPLEMENTED",
+                    "reason": "no --old-artifact supplied; upgrade needs a real previous-version artifact to upgrade "
+                              "FROM, never a fresh database"}
+
+            if not args.skip_load_soak:
+                results["load_soak"] = _run_suite_or_record_failure(run_id, "load_soak", "soak",
+                    lambda: LoadSoakRunner(args.evidence_root).run(run_id, deployment, window_seconds=args.soak_window_seconds))
+            else:
+                results["load_soak"] = {"status": "NOT_IMPLEMENTED", "reason": "--skip-load-soak was passed"}
+
+            if not args.skip_offline_burst:
+                results["offline_burst"] = _run_suite_or_record_failure(run_id, "offline_burst", "recovery",
+                    lambda: OfflineBurstRunner(args.evidence_root).run(run_id, deployment, profile=args.offline_burst_profile))
+            else:
+                results["offline_burst"] = {"status": "NOT_IMPLEMENTED", "reason": "--skip-offline-burst was passed"}
+
+            if not args.skip_scheduler_reliability:
+                results["scheduler_reliability"] = _run_suite_or_record_failure(run_id, "scheduler_reliability", "recovery",
+                    lambda: SchedulerReliabilityRunner(args.evidence_root).run(run_id, deployment))
+            else:
+                results["scheduler_reliability"] = {"status": "NOT_IMPLEMENTED", "reason": "--skip-scheduler-reliability was passed"}
+
+            if args.enable_hil:
+                results["esp_hil"] = _run_suite_or_record_failure(run_id, "esp_hil", "hil",
+                    lambda: EspHilRunner(args.evidence_root).run(run_id, backend_url=args.hil_backend_url))
+            else:
+                results["esp_hil"] = {"status": "NOT_CONFIGURED", "reason": "--enable-hil was not passed for this run"}
+
+            final = service.finish_run(run_id)
+            final["deployment"] = deployment
+            final["scenario_results"] = results
+            final["coverage_snapshot"] = coverage_snapshot(run_id)
+            _json(final)
+            return 0 if final["status"] == "PASSED" else 1
+        except Exception as exc:
+            final = service.finish_run(run_id)
+            final["error"] = str(exc)
+            final["scenario_results"] = results
+            try:
+                final["coverage_snapshot"] = coverage_snapshot(run_id)
+            except Exception:
+                pass
+            _json(final)
+            return 1
+        finally:
+            if deployment and not args.keep_environment:
+                deployer.destroy(deployment["namespace"])
+
+    if args.command == "replay-suite":
+        manifest, err_code = _safe_inspect_package(args.artifact)
+        if err_code is not None:
+            return err_code
+        artifact = service.register_artifact(application_version=str(manifest["version"]),
+                                             git_commit=str(manifest.get("source_commit") or "unknown"), path=args.artifact)
+        environment = service.attest_environment(name=f"replay-{artifact['sha256'][:12]}-{uuid.uuid4().hex[:8]}",
+                                                  kind="QA", target_url="http://qualification.invalid",
+                                                  database_identity="pending-isolated-postgresql", destructive_allowed=True,
+                                                  identity=f"QA:replay:{artifact['sha256']}:{uuid.uuid4().hex[:8]}")
+        qualification = service.start_run(artifact_id=artifact["id"], environment_id=environment["id"], profile="replay",
+                                          dataset_version=args.fixture_version, scenario_set_version="replay",
+                                          run_kind="UI_E2E" if args.suite == "ui_critical" else "FUNCTIONAL", launch_argv=launch_argv)
+        deployer = ArtifactDeployment(args.evidence_root)
+        deployment = None
+        try:
+            # Fresh isolated Postgres + a fresh app container from the SAME
+            # artifact bytes -- this is the deterministic-fixture reset spec
+            # section 8 requires before any replay: a suite is never rerun
+            # against whatever state a prior attempt happened to leave
+            # behind (the fixture SQL is not idempotent against pre-existing
+            # rows, so reusing an old deployment is not an option here).
+            deployment = deployer.deploy(qualification["id"], args.artifact, fixture_version=args.fixture_version)
+            service.conn.execute("UPDATE qa_environments SET target_url=?,hostname=?,database_identity=?,attested_at=? WHERE id=?",
+                                 (deployment["target_url"], deployment["app_container"], deployment["database_identity"],
+                                  now(), environment["id"]))
+            service.conn.commit()
+            DeterministicDatabase(args.evidence_root).seed(qualification["id"], deployment["db_container"], args.fixture_version)
+            live = LiveMESFlowQualification(qualification["id"], deployment["target_url"], deployment["db_container"],
+                                            args.evidence_root, app_container=deployment["app_container"])
+            suite_methods = {"api_contract": live.api_contracts, "integration": live.integration,
+                             "mes_workflows": live.workflows, "invariants": live.invariants}
+            if args.suite == "ui_critical":
+                result = _run_browser_suite_or_record_failure(qualification["id"], deployment["target_url"], args.evidence_root)
+            else:
+                result = suite_methods[args.suite]()
+            final = service.finish_run(qualification["id"])
+            final["deployment"] = deployment
+            final["replayed_suite"] = args.suite
+            final["replays_run_id"] = args.replays_run_id
+            final["suite_result"] = result
+            final["coverage_snapshot"] = coverage_snapshot(qualification["id"])
+            _json(final)
+            return 0 if final["status"] == "PASSED" else 1
+        except Exception as exc:
+            final = service.finish_run(qualification["id"])
+            final["error"] = str(exc)
+            _json(final)
+            return 1
+        finally:
+            if deployment and not args.keep_environment:
+                deployer.destroy(deployment["namespace"])
+
+    artifact = service.register_artifact(application_version=args.version,
+                                         git_commit=_git_commit(args.source_root), path=args.artifact)
+    environment = service.attest_environment(name=args.environment_name, kind=args.environment_kind,
+                                              target_url=args.target_url,
+                                              database_identity=args.database_identity,
+                                              destructive_allowed=args.environment_kind in {"QA", "TEST"})
+    qualification = service.start_run(artifact_id=artifact["id"], environment_id=environment["id"],
+                                      profile=args.profile, dataset_version=args.dataset_version,
+                                      scenario_set_version=args.scenario_set_version, launch_argv=launch_argv)
+    config = json.loads(args.suite_config.read_text(encoding="utf-8"))
+    runner = QualificationRunner(args.evidence_root)
+    for suite in config.get("suites", []):
+        profiles = suite.get("profiles", ["quick", "full"])
+        if args.profile not in profiles:
+            continue
+        runner.run_command_suite(qualification["id"], suite_key=suite["key"], layer=suite["layer"],
+                                 command=list(suite["command"]), cwd=args.source_root / suite.get("cwd", "."),
+                                 required=bool(suite.get("required", True)),
+                                 timeout_seconds=int(suite.get("timeout_seconds", 1800)))
+    result = service.finish_run(qualification["id"])
+    try:
+        result["coverage_snapshot"] = coverage_snapshot(qualification["id"])
+    except Exception:
+        pass
+    _json(result)
+    return 0 if result["status"] == "PASSED" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

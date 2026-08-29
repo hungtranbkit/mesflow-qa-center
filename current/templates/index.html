@@ -5,8 +5,18 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>MESFlow QA Center V{{ app_version }}</title>
   <style>{{ inline_css|safe }}</style>
+  <link rel="stylesheet" href="/static/ops_pages.css?v={{ app_version }}">
 </head>
 <body>
+<nav class="topnav">
+  <a href="/" class="active">Dashboard</a>
+  <a href="/preview-lab">UI Preview Lab</a>
+  <a href="/regression">Regression Protection</a>
+  <a href="/bugs">Bugs</a>
+  <a href="/demo">Demo Center</a>
+  <a href="/simulations">Factory Soak</a>
+  <a href="/qualifications">Release Qualification</a>
+</nav>
 <div id="toast" class="toast" hidden></div>
 <header class="topbar">
   <div><div class="eyebrow">MESFLOW TEST AUTOMATION</div><h1>QA Center <span>V{{ app_version }}</span></h1><p>Kiểm thử API, vòng đời sản xuất và Full UI Coverage cho MESFlow.</p></div>
@@ -16,10 +26,14 @@
   <section class="card connection-card">
     <div class="section-title"><div><h2>Kết nối MESFlow</h2><p>Test thông qua API thật, không thao tác trực tiếp SQLite.</p></div><span id="connectionBadge" class="pill neutral">Chưa kiểm tra</span></div>
     <div class="form-grid">
-      <label><span>MESFlow nội bộ Docker</span><input id="internal_base_url" value="{{ config.internal_base_url or 'http://mesflow-app:8080' }}" readonly><small>Internal-only qua mesflow-edge; không gọi Cloudflare/nginx/public URL.</small></label>
+      <div><span>Target</span><div class="cleanup-summary"><strong>Local</strong> · This machine · Built-in</div><small>QA Center local luôn dùng MESFlow trên máy hiện tại; không cần host, SSH hoặc Agent URL.</small></div>
+      <div><span>Execution context</span><div class="cleanup-summary"><strong>LOCAL</strong> · Local Docker · Local filesystem</div><small>Remote Production Test/Production được cấu hình riêng tại Deploy Agent.</small></div>
+      <input id="mainTargetPreset" type="hidden" value="docker">
       <input id="base_url" type="hidden" value="{{ config.internal_base_url or 'http://mesflow-app:8080' }}">
+      <input id="internal_base_url" type="hidden" value="{{ config.internal_base_url or 'http://mesflow-app:8080' }}">
       <label><span>Tài khoản admin</span><input id="username" value="{{ config.username }}" autocomplete="username"></label>
       <label><span>Mật khẩu</span><input id="password" type="password" value="{{ config.password }}" autocomplete="current-password"></label>
+      <label class="wide"><span>PostgreSQL URL cho DB Automation</span><input id="database_url" type="password" value="{{ config.database_url or '' }}" spellcheck="false" autocomplete="off" placeholder="postgresql://mesflow:***@postgres:5432/mesflow_demo"><small>Lưu một lần. QA Center dùng cùng host/user để tạo <code>mesflow_demo_template</code> và <code>mesflow_demo</code>. DB nguồn <code>mesflow</code> chỉ được đọc/clone.</small></label>
     </div>
     <div class="toolbar"><label class="inline-check"><input id="verify_ssl" type="checkbox" {% if config.verify_ssl %}checked{% endif %}> Xác minh SSL</label><button id="saveConfig" class="secondary">Lưu cấu hình</button><button id="checkConnection">Kiểm tra kết nối</button><span id="connectionStatus" class="muted"></span></div>
   </section>
@@ -61,15 +75,39 @@
     <article class="card test-card"><div class="test-icon">06</div><h3>Behavioral Campaign</h3><p>Sinh campaign theo persona, trạng thái, dữ liệu, thời gian, mạng và concurrency; replay chính xác bằng seed.</p><div class="settings-row"><label>Mode<select id="behavioralMode"><option>SMOKE</option><option>REGRESSION</option><option>HUMAN_FLOW</option><option>CHAOS</option><option>SOAK</option><option>FULL</option></select></label><label>Seed<input id="behavioralSeed" type="number" value="20260813"></label><label>Scenario<input id="behavioralCount" type="number" value="20" min="1" max="10000"></label></div><div class="card-footer"><span>Deterministic + replayable</span><button data-test="behavioral">Tạo campaign</button></div></article>
   </section>
 
-  <section class="card danger-zone">
+  <section class="card demo-launch-card">
+    <div class="section-title"><div><h2>Demo Presentation</h2><p>Demo MESFlow được tách thành màn hình riêng, tối ưu cho trình chiếu và điều khiển Presenter.</p></div><span class="pill ok">NEW</span></div>
+    <div class="demo-launch-body"><div><strong>Full-screen Demo Center</strong><p class="muted">Scenario, Live View, Pause/Resume, Review Previous và kiểm tra đăng nhập MESFlow trước khi chạy.</p></div><a class="btn-link demo-launch-btn" href="/demo">Mở Demo Center →</a></div>
+  </section>
+
+
+  <section class="card demo-launch-card">
+    <div class="section-title"><div><h2>UI Preview Lab · Regression · Bug Center</h2><p>Ba màn hình v1.23.0: môi trường MESFlow cô lập để review UI, theo dõi độ ổn định feature, và vòng đời bug verify-before-resolve.</p></div><span class="pill ok">NEW</span></div>
+    <div class="demo-launch-body"><div><strong>UI Preview Lab</strong><p class="muted">Tạo môi trường app+DB+network riêng theo preset dữ liệu, chạy UI Coverage.</p></div><a class="btn-link demo-launch-btn" href="/preview-lab">Mở Preview Lab →</a></div>
+    <div class="demo-launch-body"><div><strong>Regression Protection</strong><p class="muted">Feature Registry, run plan FAST/REGRESSION/FULL, impact detection theo git diff.</p></div><a class="btn-link demo-launch-btn" href="/regression">Mở Regression →</a></div>
+    <div class="demo-launch-body"><div><strong>Bug Center</strong><p class="muted">Dedup theo fingerprint, verify-before-resolve, bug RESOLVED tái hiện tự thành REGRESSION.</p></div><a class="btn-link demo-launch-btn" href="/bugs">Mở Bug Center →</a></div>
+  </section>
+
+  <section class="card demo-db-card" id="demoDbAutomation">
     <div class="section-title">
-      <div><h2>Dọn dữ liệu kiểm thử</h2><p>Chỉ xóa PO có tiền tố <code>QAV65817-</code> (và dữ liệu QA legacy QAV65813-) cùng nhân viên <code>QAV65817-EMP-</code>. Không đụng dữ liệu sản xuất thật.</p></div>
-      <span class="pill neutral" id="cleanupBadge">Chưa kiểm tra</span>
+      <div><h2>Demo Database Automation</h2><p>Một quy trình chuẩn, không làm tay: QA Center tự tạo baseline demo từ DB nguồn, chỉ dọn dữ liệu trên <strong>bản clone disposable</strong>, verify rồi tạo <code>mesflow_demo</code>. Database <code>mesflow</code> không bị DELETE/TRUNCATE.</p></div>
+      <span class="pill neutral" id="demoDbBadge">Chưa kiểm tra</span>
     </div>
-    <div class="cleanup-summary" id="cleanupSummary">Bấm “Kiểm tra dữ liệu” để xem trước số bản ghi sẽ bị xóa.</div>
+    <div class="cleanup-summary" id="demoDbSummary">Lưu PostgreSQL URL ở phần Kết nối MESFlow, sau đó bấm “Kiểm tra Demo DB”.</div>
+    <div class="db-target-grid" id="demoDbTarget"></div>
+    <div id="demoDbChecks" class="cleanup-table-preview"></div>
     <div class="toolbar">
-      <button class="secondary" id="previewCleanup">Kiểm tra dữ liệu</button>
-      <button class="danger" id="cleanupTestData" disabled>Xóa dữ liệu test</button>
+      <button class="secondary" id="previewDemoDb">Kiểm tra Demo DB</button>
+      <button id="prepareDemoDb" disabled>Chuẩn bị Demo DB</button>
+      <button class="danger" id="resetDemoDb" disabled>Reset Demo DB</button>
+    </div>
+    <p class="muted"><strong>Chuẩn bị Demo DB</strong>: clone <code>mesflow → mesflow_demo_template</code>, xóa runtime data trên clone, verify master/config, rồi tạo <code>mesflow_demo</code>. <strong>Reset Demo DB</strong>: drop/recreate <code>mesflow_demo</code> từ template. Tất cả tự động.</p>
+  </section>
+
+  <section class="card">
+    <div class="section-title">
+      <div><h2>Cleanup Legacy</h2><p>Full Cleanup và cleanup theo prefix trên DB chính vẫn <strong>bị vô hiệu hóa</strong>. Không còn quy trình thủ công phải nhớ bảng nào giữ/xóa.</p></div>
+      <span class="pill ok">DISABLED SAFELY</span>
     </div>
   </section>
 

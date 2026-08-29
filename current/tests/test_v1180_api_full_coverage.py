@@ -38,7 +38,7 @@ def test_logs_not_found_and_last_500():
 def test_config_roundtrip_and_corrupt_config_falls_back(tmp_path, monkeypatch):
     cfg=tmp_path/'config.json'; monkeypatch.setattr(agent,'CONFIG_PATH',cfg)
     agent.save_config({'base_url':'http://x','username':'u'})
-    loaded=agent.load_config(); assert loaded['base_url']=='http://x' and loaded['username']=='u' and 'functional_paths' in loaded
+    loaded=agent.load_config(); assert loaded['base_url']==agent.QA_INTERNAL_URL and loaded['username']=='u' and 'functional_paths' in loaded
     cfg.write_text('{broken',encoding='utf-8'); loaded=agent.load_config(); assert loaded['base_url']==agent.DEFAULT_CONFIG['base_url']
     c=agent.app.test_client(); r=c.post('/api/config',json={'duration_minutes':7}); assert r.status_code==200 and r.json['config']['duration_minutes']==7
 

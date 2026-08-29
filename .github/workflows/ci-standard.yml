@@ -1,0 +1,27 @@
+name: CI (workspace standard, manual)
+
+# NOT YET ACTIVATED as a real gate -- workflow_dispatch only. This is the
+# thin child-repo workflow the multi-repo workspace's Universal CI/CD
+# Standard V1 calls for (docs/CI_CD_STANDARD.md section 5): checkout ->
+# call the shared reusable CI. QA Center has no other GitHub Actions
+# workflow yet (this repo's own onboarding pass added the local
+# scripts/ci-preflight.sh / scripts/ci-test.sh contract, not a live gate).
+#
+# TODO once the workspace standards repo has a real GitHub remote (see
+# that repo's docs/GITHUB_CI_CD_SETUP.md -- currently GITHUB_REMOTE_STATUS:
+# READY_TO_CONFIGURE, no remote configured yet):
+#   1. fill in `standards_repository` below with its real owner/repo
+#   2. change `on:` to `pull_request:` / `push:`
+# Until then this file documents the exact intended reference without
+# pretending it is live (a placeholder `uses:` would just fail every run).
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ci:
+    uses: OWNER/STANDARDS_REPO_PLACEHOLDER/.github/workflows/_project-ci.yml@main
+    with:
+      project: qa-center
+      standards_repository: OWNER/STANDARDS_REPO_PLACEHOLDER
+      standards_ref: main

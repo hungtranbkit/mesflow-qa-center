@@ -22,7 +22,7 @@ def application_version(root: Path) -> str:
 
 
 def installer_version(root: Path) -> str:
-    match = re.search(r'^APP_VERSION="([^"]+)"$', (root / "install.sh").read_text(encoding="utf-8"), re.MULTILINE)
+    match = re.search(r'^APP_VERSION="([^"]+)"$', (root.parent / "install.sh").read_text(encoding="utf-8"), re.MULTILINE)
     if not match:
         raise AssertionError("install.sh must declare APP_VERSION")
     return match.group(1)
@@ -32,4 +32,6 @@ def assert_version_contract(root: Path) -> str:
     expected = source_version(root)
     assert application_version(root) == expected
     assert installer_version(root) == expected
+    assert source_version(root.parent) == expected
+    assert f"mesflow-qa-center:{expected}" in (root.parent / "compose.yml").read_text(encoding="utf-8")
     return expected

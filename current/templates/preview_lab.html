@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MESFlow QA Center · UI Preview Lab</title>
+  <link rel="stylesheet" href="/static/app.css?v={{ app_version }}">
+  <link rel="stylesheet" href="/static/ops_pages.css?v={{ app_version }}">
+</head>
+<body>
+<nav class="topnav">
+  <a href="/">Dashboard</a>
+  <a href="/preview-lab" class="active">UI Preview Lab</a>
+  <a href="/regression">Regression Protection</a>
+  <a href="/bugs">Bugs</a>
+  <a href="/demo">Demo Center</a>
+  <a href="/simulations">Factory Soak</a>
+</nav>
+<div id="toast" class="toast" hidden></div>
+<header class="ops-topbar">
+  <div><div class="eyebrow">MESFLOW TEST AUTOMATION</div><h1>UI Preview Lab</h1><p>Môi trường MESFlow cô lập (app + DB + network riêng) để review UI mà không đụng dữ liệu thật.</p></div>
+  <a class="ghost-link" href="/">← QA Center</a>
+</header>
+<div class="isolation-banner"><strong>ISOLATED PREVIEW</strong> Không đọc hoặc ghi vào database MESFlow hiện tại.</div>
+<main class="ops-main">
+  <section class="section-title simple">
+    <div><h2>Môi trường Preview</h2><p>Tách biệt hoàn toàn với MESFlow hiện tại. Mỗi môi trường có Database, App, Network và Backend Port riêng.</p></div>
+    <button id="refreshEnvs" class="secondary">Làm mới</button>
+  </section>
+  <div id="envArea"><div class="empty">Đang tải…</div></div>
+
+  <section class="section-title simple" style="margin-top:26px"><div><h2>Coverage Runs</h2><p>Kết quả UI Coverage gần nhất trên mỗi môi trường.</p></div></section>
+  <div class="card">
+    <table class="ops-table">
+      <thead><tr><th>Run</th><th>Preview</th><th>Trạng thái</th><th>Bugs</th><th>Bắt đầu</th><th>Kết thúc</th></tr></thead>
+      <tbody id="coverageBody"><tr><td colspan="6" class="empty">Chưa có coverage run.</td></tr></tbody>
+    </table>
+  </div>
+</main>
+<dialog id="errorDialog" class="data-dialog"><form method="dialog"><button class="dialog-close" aria-label="Close">×</button></form><h2>Chi tiết lỗi</h2><pre id="errorDialogBody" style="height:auto;max-height:300px;white-space:pre-wrap"></pre></dialog>
+<script src="/static/preview_lab.js?v={{ app_version }}"></script>
+</body>
+</html>

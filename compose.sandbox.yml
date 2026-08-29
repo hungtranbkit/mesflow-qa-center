@@ -1,0 +1,96 @@
+# Isolated ProjectFlow sandbox for QA Center -- deliberately standalone
+# (no relation to compose.yml/docker-compose.yml, the real deployment-
+# target composes for the live mesflow-qa-center container at
+# 127.0.0.1:8095). Never built here (Build Once): only ever runs an
+# already-built, immutable mesflow-qa-center:<version> image.
+#
+# Safety properties (matches mesflow-app's own compose.projectflow-
+# local.yml, see that repo's PROJECT.yaml deployment.local.notes):
+#   - distinct container name (never mesflow-qa-center)
+#   - distinct host port (18096, never 8095)
+#   - distinct data/runtime directory (runtime-projectflow-local/)
+#   - joins mesflow-app's OWN isolated `mesflow-projectflow-local_network`
+#     as an EXTERNAL network -- that network (and its app/postgres
+#     containers) is the one already-audited, non-production ProjectFlow
+#     "DEV" target (see projectflow-workspace-manager's
+#     deployment_service.py module docstring for the full audit). This
+#     compose file never joins mesflow-edge and can never reach the real
+#     mesflow-qa-center / mesflow-app / mesflow-postgres production
+#     containers.
+#
+# Database: the isolated mesflow-projectflow-local-postgres instance,
+# using QA Center's own documented golden-template/disposable-clone
+# model (QA_DB_RESET_SETUP.md) -- never the real `mesflow` database.
+# Creating the mesflow_qa_template golden baseline is left as the
+# explicit, deliberate admin step that file itself calls for; this
+# compose file only wires the connection, it does not seed anything on
+# its own.
+name: mesflow-qa-center-projectflow-local
+
+services:
+  qa:
+    image: ${MESFLOW_QA_IMAGE:-mesflow-qa-center:1.32.0}
+    container_name: mesflow-qa-center-projectflow-local
+    restart: unless-stopped
+    environment:
+      MESFLOW_QA_HOST: 0.0.0.0
+      MESFLOW_QA_PORT: "8095"
+      MESFLOW_QA_CONFIG_PATH: /data/config.json
+      MESFLOW_QA_LOG_DIR: /data/logs
+      MESFLOW_QA_REPORT_DIR: /data/reports
+      MESFLOW_QA_STATE_DIR: /data/state
+      MESFLOW_QA_RUNTIME_DIR: /data
+      MESFLOW_QA_INTERNAL_ONLY: "1"
+      # The isolated mesflow-app sandbox, never the real deployment
+      # target or mesflow.net -- see the file header.
+      MESFLOW_QA_INTERNAL_URL: http://mesflow-projectflow-local-app:8080
+      MESFLOW_QA_DEMO_TARGET_URL: http://mesflow-projectflow-local-app:8080
+      MESFLOW_QA_PROFILE: LOCAL
+      MESFLOW_QA_USERNAME: admin
+      MESFLOW_QA_PASSWORD: Admin@123456
+      MESFLOW_QA_DURATION_MINUTES: "30"
+      MESFLOW_QA_API_WORKERS: "10"
+      MESFLOW_QA_AUTO_RESUME: "1"
+      # Isolated postgres -- mesflow-projectflow-local-postgres, the
+      # same instance the isolated mesflow-app sandbox itself uses.
+      # Real superuser (CREATEDB) confirmed for this container's own
+      # POSTGRES_USER, matching what QA Center's DB-reset model needs
+      # to create/reset its disposable mesflow_qa clone.
+      MESFLOW_QA_DATABASE_URL: postgresql://mesflow_projectflow_local:mesflow_projectflow_local_password@mesflow-projectflow-local-postgres:5432/mesflow_qa
+      MESFLOW_QA_DB_ADMIN_URL: postgresql://mesflow_projectflow_local:mesflow_projectflow_local_password@mesflow-projectflow-local-postgres:5432/postgres
+      MESFLOW_QA_TEMPLATE_DATABASE: mesflow_qa_template
+      MESFLOW_QA_DB_ALLOW_RESET: "1"
+      MESFLOW_QA_DB_ALLOWED_NAMES: mesflow_qa,mesflow_test,mesflow_demo
+      MESFLOW_QA_DB_ALLOWED_HOSTS: mesflow-projectflow-local-postgres,postgres,127.0.0.1,localhost
+      MESFLOW_QA_DEMO_SOURCE_DATABASE: mesflow_projectflow_local
+      MESFLOW_QA_DEMO_DATABASE: mesflow_demo
+      MESFLOW_QA_DEMO_TEMPLATE_DATABASE: mesflow_demo_template
+      MESFLOW_QA_DB_MIN_EMPLOYEES: "26"
+      MESFLOW_QA_DB_MIN_WORK_SHIFTS: "2"
+      MESFLOW_QA_DB_MIN_SHIFT_INTERVALS: "4"
+      MESFLOW_QA_DB_MIN_TEMPLATES: "1"
+      MESFLOW_QA_DB_MIN_USERS: "1"
+      MESFLOW_QA_BACKUP_DIR: /data/backups
+      MESFLOW_QA_MES_RETRY_SECONDS: "30"
+      PLAYWRIGHT_HEADLESS: "true"
+      PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+    ports:
+      # WM_PORT_QA is injected by ProjectFlow's SandboxManager port
+      # allocator (service key "qa" -> WM_PORT_QA), never a fixed port --
+      # this is what lets two QA sandboxes run concurrently (section 24).
+      - "127.0.0.1:${WM_PORT_QA:-18096}:8095"
+    volumes:
+      - ./runtime-projectflow-local:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8095/api/version"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - mesflow_projectflow_local
+
+networks:
+  mesflow_projectflow_local:
+    name: mesflow-projectflow-local_network
+    external: true
