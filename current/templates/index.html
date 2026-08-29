@@ -23,6 +23,14 @@
   <div class="top-actions"><span id="clock"></span><span id="agentState" class="pill ok">Agent online</span></div>
 </header>
 <main>
+  <section class="context-band" aria-label="Ngữ cảnh target đang hoạt động">
+    <div class="context-item"><span class="context-label">Target</span><strong class="context-value">MESFlow Local</strong></div>
+    <div class="context-item"><span class="context-label">Endpoint</span><code class="context-value mono">{{ config.internal_base_url or 'http://mesflow-app:8080' }}</code></div>
+    <div class="context-item"><span class="context-label">Environment</span><span class="environment-badge">LOCAL</span></div>
+    <div class="context-item"><span class="context-label">MESFlow version</span><strong class="context-value">v65.8.13</strong></div>
+    <div class="context-item"><span class="context-label">QA Center version</span><strong class="context-value">v{{ app_version }}</strong></div>
+    <div class="context-item"><span class="context-label">Connection</span><span id="contextConnection" class="pill neutral">Chưa kiểm tra</span></div>
+  </section>
   <section class="card connection-card">
     <div class="section-title"><div><h2>Kết nối MESFlow</h2><p>Test thông qua API thật, không thao tác trực tiếp SQLite.</p></div><span id="connectionBadge" class="pill neutral">Chưa kiểm tra</span></div>
     <div class="form-grid">

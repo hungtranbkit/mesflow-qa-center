@@ -1,0 +1,191 @@
+{
+  "generated_at": "2026-08-29T04:55:20.914Z",
+  "source": "http://127.0.0.1:28095",
+  "screens": [
+    {
+      "screen": "dashboard",
+      "route": "/",
+      "state": "normal",
+      "viewport": "1366x768",
+      "screenshot": "dashboard-normal-1366x768.png",
+      "verdict": "PASS"
+    },
+    {
+      "screen": "dashboard",
+      "route": "/",
+      "state": "desktop-wide",
+      "viewport": "1920x1080",
+      "screenshot": "dashboard-desktop-wide-1920x1080.png",
+      "verdict": "PASS"
+    },
+    {
+      "screen": "dashboard",
+      "route": "/",
+      "state": "desktop",
+      "viewport": "1440x900",
+      "screenshot": "dashboard-desktop-1440x900.png",
+      "verdict": "PASS"
+    },
+    {
+      "screen": "dashboard",
+      "route": "/",
+      "state": "tablet",
+      "viewport": "1024x768",
+      "screenshot": "dashboard-tablet-1024x768.png",
+      "verdict": "PASS"
+    },
+    {
+      "screen": "dashboard",
+      "route": "/",
+      "state": "no-data",
+      "viewport": "1366x768",
+      "screenshot": "dashboard-no-data-1366x768.png",
+      "verdict": "PASS"
+    },
+    {
+      "screen": "target",
+      "route": "/",
+      "state": "connected",
+      "viewport": "1366x768",
+      "screenshot": "target-connected-1366x768.png",
+      "verdict": "PASS"
+    },
+    {
+      "screen": "target",
+      "route": "/",
+      "state": "unavailable",
+      "viewport": "1366x768",
+      "screenshot": "target-unavailable-1366x768.png",
+      "verdict": "PASS"
+    },
+    {
+      "screen": "scenario-list",
+      "route": "/",
+      "state": "normal",
+      "viewport": "1366x768",
+      "screenshot": "scenario-list-normal-1366x768.png",
+      "verdict": "PASS"
+    },
+    {
+      "screen": "scenario",
+      "route": "/regression",
+      "state": "filtered",
+      "viewport": "1366x768",
+      "screenshot": "scenario-filtered-1366x768.png",
+      "verdict": "PASS"
+    },
+    {
+      "screen": "preview-lab",
+      "route": "/preview-lab",
+      "state": "no-environments",
+      "viewport": "1366x768",
+      "screenshot": "preview-lab-no-environments-1366x768.png",
+      "verdict": "PASS"
+    },
+    {
+      "screen": "bug-center",
+      "route": "/bugs",
+      "state": "normal",
+      "viewport": "1366x768",
+      "screenshot": "bug-center-normal-1366x768.png",
+      "verdict": "PASS"
+    },
+    {
+      "screen": "run",
+      "route": "/simulations",
+      "state": "setup",
+      "viewport": "1366x768",
+      "screenshot": "run-setup-1366x768.png",
+      "verdict": "PASS"
+    },
+    {
+      "screen": "run",
+      "route": "/",
+      "state": "running",
+      "viewport": "1366x768",
+      "screenshot": "run-running-1366x768.png",
+      "verdict": "PASS"
+    },
+    {
+      "screen": "result",
+      "route": "/",
+      "state": "passed",
+      "viewport": "1366x768",
+      "screenshot": "result-passed-1366x768.png",
+      "verdict": "PASS"
+    },
+    {
+      "screen": "result",
+      "route": "/",
+      "state": "failed",
+      "viewport": "1366x768",
+      "screenshot": "result-failed-1366x768.png",
+      "verdict": "PASS"
+    },
+    {
+      "screen": "result",
+      "route": "/qualifications",
+      "state": "blocked",
+      "viewport": "1366x768",
+      "screenshot": "result-blocked-1366x768.png",
+      "verdict": "PASS"
+    },
+    {
+      "screen": "run-detail",
+      "route": "/demo",
+      "state": "ready",
+      "viewport": "1366x768",
+      "screenshot": "run-detail-ready-1366x768.png",
+      "verdict": "PASS"
+    },
+    {
+      "screen": "evidence",
+      "route": "/qualifications",
+      "state": "ledger",
+      "viewport": "1366x768",
+      "screenshot": "evidence-ledger-1366x768.png",
+      "verdict": "PASS"
+    },
+    {
+      "screen": "logs",
+      "route": "/",
+      "state": "empty",
+      "viewport": "1366x768",
+      "screenshot": "logs-empty-1366x768.png",
+      "verdict": "PASS"
+    },
+    {
+      "screen": "settings",
+      "route": "/",
+      "state": "connection",
+      "viewport": "1366x768",
+      "screenshot": "settings-connection-1366x768.png",
+      "verdict": "PASS"
+    },
+    {
+      "screen": "modal",
+      "route": "/demo",
+      "state": "generated-data",
+      "viewport": "1366x768",
+      "screenshot": "modal-generated-data-1366x768.png",
+      "verdict": "PASS"
+    },
+    {
+      "screen": "dashboard",
+      "route": "/",
+      "state": "mobile",
+      "viewport": "390x844",
+      "screenshot": "dashboard-mobile-390x844.png",
+      "verdict": "PASS"
+    },
+    {
+      "screen": "demo",
+      "route": "/demo",
+      "state": "mobile",
+      "viewport": "360x800",
+      "screenshot": "demo-mobile-360x800.png",
+      "verdict": "PASS"
+    }
+  ],
+  "layout_failures": []
+}

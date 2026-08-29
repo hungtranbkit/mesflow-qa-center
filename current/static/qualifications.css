@@ -42,3 +42,9 @@
 .kiosk-detail-wrap{margin-top:12px}
 .kiosk-detail-wrap summary{cursor:pointer;font-weight:700;margin-bottom:8px}
 @media(max-width:520px){.kiosk-summary{grid-template-columns:1fr}.kiosk-actions{flex-direction:column}.kiosk-actions button{width:100%;min-height:44px}}
+
+/* Shared QA Center token aliases and control rhythm. */
+:root{--space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-5:24px;--space-6:32px;--space-7:48px;--canvas:#f4f6f8;--danger:#b4232a;--radius-sm:6px;--radius-md:8px;--radius-lg:12px;--control-height:40px;--z-nav:20;--z-sticky:30;--z-drawer:50;--z-modal:70;--z-toast:90}
+.topnav{gap:var(--space-1);padding:6px var(--space-5);position:relative;z-index:var(--z-nav)}.topnav a{border-radius:var(--radius-sm)}.qualification-shell{padding:var(--space-5)}.page-head{gap:var(--space-5);margin-bottom:var(--space-4)}.page-head h1{font-size:26px;line-height:32px}.page-head button{height:var(--control-height);border-radius:var(--radius-md)}.identity-band{border-radius:var(--radius-lg);box-shadow:0 2px 8px rgba(16,43,63,.08)}.panel{border-radius:var(--radius-lg);box-shadow:0 2px 8px rgba(16,43,63,.06)}.table-wrap{border-radius:var(--radius-md)}
+:where(a,button,input,select,summary,[tabindex]):focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+@media(max-width:520px){.qualification-shell{padding:var(--space-4)}.topnav{padding-inline:var(--space-3)}.page-head h1{font-size:24px}}

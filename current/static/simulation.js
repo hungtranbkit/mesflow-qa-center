@@ -14,10 +14,17 @@ async function loadEnvironments(){
     sel.innerHTML=envs.length
       ? envs.map(e=>`<option value="${e.id}">${esc(e.id)} · ${esc(e.preset)} · port ${e.port}</option>`).join('')
       : '<option value="">Không có môi trường READY -- mở tab UI Preview Lab và tạo một môi trường trước</option>';
+    updateTargetContext();
   }catch(e){
     $('previewSelect').innerHTML='<option value="">Lỗi tải danh sách môi trường</option>';
   }
 }
+
+function updateTargetContext(){
+  const selected=$('previewSelect').selectedOptions[0];
+  $('simulationTargetEndpoint').textContent=selected&&selected.value?selected.textContent:'Chọn môi trường bên dưới';
+}
+$('previewSelect').addEventListener('change',updateTargetContext);
 
 function fmtMetrics(m){
   if(!m) return '';

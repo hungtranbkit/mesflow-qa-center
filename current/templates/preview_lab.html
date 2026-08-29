@@ -15,6 +15,7 @@
   <a href="/bugs">Bugs</a>
   <a href="/demo">Demo Center</a>
   <a href="/simulations">Factory Soak</a>
+  <a href="/qualifications">Release Qualification</a>
 </nav>
 <div id="toast" class="toast" hidden></div>
 <header class="ops-topbar">
@@ -31,10 +32,12 @@
 
   <section class="section-title simple" style="margin-top:26px"><div><h2>Coverage Runs</h2><p>Kết quả UI Coverage gần nhất trên mỗi môi trường.</p></div></section>
   <div class="card">
+    <div class="table-wrap">
     <table class="ops-table">
       <thead><tr><th>Run</th><th>Preview</th><th>Trạng thái</th><th>Bugs</th><th>Bắt đầu</th><th>Kết thúc</th></tr></thead>
       <tbody id="coverageBody"><tr><td colspan="6" class="empty">Chưa có coverage run.</td></tr></tbody>
     </table>
+    </div>
   </div>
 </main>
 <dialog id="errorDialog" class="data-dialog"><form method="dialog"><button class="dialog-close" aria-label="Close">×</button></form><h2>Chi tiết lỗi</h2><pre id="errorDialogBody" style="height:auto;max-height:300px;white-space:pre-wrap"></pre></dialog>
