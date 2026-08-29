@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-APP_VERSION="1.32.0"
+APP_VERSION="1.32.1"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -x "$HERE/../install.sh" && -f "$HERE/../PROJECT.yaml" ]]; then
   exec "$HERE/../install.sh" "$@"

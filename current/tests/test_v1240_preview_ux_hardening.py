@@ -499,3 +499,78 @@ def test_new_config_env_vars_are_documented_in_the_module_and_compose():
     text = (ROOT / "engine" / "preview_manager.py").read_text(encoding="utf-8")
     for name in ("MESFLOW_PREVIEW_BIND_HOST", "MESFLOW_PREVIEW_PUBLIC_HOST", "MESFLOW_PREVIEW_PORT_START"):
         assert name in text
+
+
+# --------------------------------------------------------------------------
+# logs() -- ported from the origin/main "ui-preview" lineage's equivalent
+# read-only /api/ui-preview/logs endpoint, adapted to the multi-environment
+# (env_id-keyed) architecture this module already uses.
+# --------------------------------------------------------------------------
+
+def test_logs_never_issues_a_mutating_docker_command(monkeypatch, tmp_path):
+    mgr, env, _ = _fake_ready_env(monkeypatch, tmp_path)
+    calls = []
+
+    def logging_runner(args, timeout=60):
+        calls.append(args)
+        cmd = args[1:]
+        if cmd[0] == "logs":
+            return _FakeResult(stdout="app log line\n")
+        return _default_fake_handler(cmd) or _FakeResult(stdout="ok\n")
+
+    mgr.docker = preview_manager.DockerCLI(runner=logging_runner)
+    mgr.logs(env["id"])
+
+    READ_ONLY_VERBS = {"logs", "inspect"}
+    for c in calls:
+        assert c[1] in READ_ONLY_VERBS, f"logs() issued a mutating command: {c}"
+
+
+def test_logs_refuses_a_container_missing_the_preview_label(monkeypatch, tmp_path):
+    mgr, env, calls = _fake_ready_env(monkeypatch, tmp_path)
+
+    def unlabeled_runner(args, timeout=60):
+        cmd = args[1:]
+        if cmd[0] == "inspect" and len(cmd) >= 3 and "Labels" in cmd[2]:
+            return _FakeResult(stdout="null\n")  # no labels -- guard must refuse
+        if cmd[0] == "logs":
+            raise AssertionError("must never call `docker logs` once the ownership guard fails")
+        return _default_fake_handler(cmd) or _FakeResult(stdout="ok\n")
+
+    mgr.docker = preview_manager.DockerCLI(runner=unlabeled_runner)
+    result = mgr.logs(env["id"])
+    assert result == {"app": "", "database": ""}
+
+
+def test_logs_returns_app_and_database_output(monkeypatch, tmp_path):
+    mgr, env, calls = _fake_ready_env(monkeypatch, tmp_path)
+
+    def fake_runner(args, timeout=60):
+        cmd = args[1:]
+        if cmd[0] == "logs" and env["app_container"] in cmd:
+            return _FakeResult(stdout="APP-LOG-MARKER\n")
+        if cmd[0] == "logs" and env["db_container"] in cmd:
+            return _FakeResult(stdout="DB-LOG-MARKER\n")
+        return _default_fake_handler(cmd) or _FakeResult(stdout="ok\n")
+
+    mgr.docker = preview_manager.DockerCLI(runner=fake_runner)
+    result = mgr.logs(env["id"])
+    assert "APP-LOG-MARKER" in result["app"]
+    assert "DB-LOG-MARKER" in result["database"]
+
+
+def test_logs_route_returns_ok_and_logs_via_http(monkeypatch, tmp_path):
+    mgr, env, calls = _fake_ready_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(agent, "_preview_mgr", mgr)
+    client = agent.app.test_client()
+    r = client.get(f"/api/preview/environments/{env['id']}/logs")
+    assert r.status_code == 200
+    assert r.json["ok"] is True
+    assert "app" in r.json["logs"] and "database" in r.json["logs"]
+
+
+def test_logs_route_returns_404_for_missing_environment():
+    client = agent.app.test_client()
+    r = client.get("/api/preview/environments/doesnotexist/logs")
+    assert r.status_code == 404
+    assert r.json["ok"] is False

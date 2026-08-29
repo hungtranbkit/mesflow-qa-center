@@ -169,6 +169,15 @@ class DockerCLI:
         out = self._exec(["inspect", "--format", "{{.Config.Image}}", name])
         return out.strip()
 
+    def logs_of_container(self, name: str, tail: int) -> str:
+        """Best-effort tail of a container's combined stdout/stderr, for
+        debugging a preview from the UI. Tolerant, not _exec: a container
+        that never started or was already removed has nothing useful to
+        raise about -- an empty string is the honest answer, not an
+        error."""
+        result = self._run(["docker", "logs", "--tail", str(tail), name], timeout=15)
+        return ((result.stdout or "") + (result.stderr or ""))
+
     def create_network(self, name: str) -> None:
         self._exec(["network", "create", "--label", f"{PREVIEW_LABEL_KEY}={PREVIEW_LABEL_VALUE}", name], timeout=30)
 
@@ -611,3 +620,28 @@ class PreviewManager:
             return {"app_status": app_status, "db_status": db_status, "health": health}
         except Exception:  # noqa: BLE001 - refresh must never 500 the page
             return {"app_status": "UNKNOWN", "db_status": "UNKNOWN", "health": None}
+
+    def logs(self, env_id: str, tail: int = 200) -> dict[str, str]:
+        """Best-effort tail of a preview's app + db container logs, for
+        debugging from the UI. Read-only (never run/stop/start/rm/create),
+        but still runs the same ownership guard as a destructive op before
+        touching either container -- this never dumps logs from a
+        container this module didn't create. Never raises: a container
+        that's gone or a Docker daemon that's unreachable just yields an
+        empty string for that side, matching runtime_state()'s own
+        never-500 convention."""
+        env = self.get(env_id)
+        try:
+            self._guard_destructive(env)
+        except PreviewSafetyError:
+            return {"app": "", "database": ""}
+        result = {"app": "", "database": ""}
+        try:
+            result["app"] = self.docker.logs_of_container(env["app_container"], tail)[-24000:]
+        except Exception:  # noqa: BLE001 - best-effort debug output only
+            pass
+        try:
+            result["database"] = self.docker.logs_of_container(env["db_container"], max(40, tail // 2))[-12000:]
+        except Exception:  # noqa: BLE001 - best-effort debug output only
+            pass
+        return result

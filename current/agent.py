@@ -53,7 +53,7 @@ STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__)
 app.register_blueprint(qualification_bp)
-APP_VERSION = "1.32.0"
+APP_VERSION = "1.32.1"
 QA_PROFILE = os.environ.get("MESFLOW_QA_PROFILE", "LOCAL").strip().upper()
 if QA_PROFILE not in {"LOCAL", "PRODUCTION_TEST"}:
     raise RuntimeError("MESFLOW_QA_PROFILE must be LOCAL or PRODUCTION_TEST")
@@ -2184,6 +2184,14 @@ def api_preview_create():
 def api_preview_get(env_id):
     try:
         return jsonify({"ok": True, "environment": _with_runtime(_preview_mgr.get(env_id))})
+    except preview_manager_mod.PreviewNotFoundError:
+        return jsonify({"ok": False, "error": "NOT_FOUND"}), 404
+
+
+@app.get("/api/preview/environments/<env_id>/logs")
+def api_preview_logs(env_id):
+    try:
+        return jsonify({"ok": True, "logs": _preview_mgr.logs(env_id)})
     except preview_manager_mod.PreviewNotFoundError:
         return jsonify({"ok": False, "error": "NOT_FOUND"}), 404
 
